@@ -671,3 +671,131 @@ def get_text_from_multimodal_content(content: Any) -> str:
                 texts.append(item.get("text", ""))
         return " ".join(texts)
     return ""
+
+
+def convert_to_text_only_conversation(conversation: ConversationType) -> ConversationType:
+    """Convert a multimodal conversation to text-only by replacing images with placeholders.
+
+    For VL models, we need to tokenize the conversation with image placeholders.
+    This function converts multimodal content to a format the processor can handle.
+
+    Args:
+        conversation: List of message dicts, potentially with multimodal content.
+
+    Returns:
+        Conversation with image_url items converted to image type items.
+    """
+    text_only = []
+    for message in conversation:
+        content = message.get("content")
+        if isinstance(content, str):
+            text_only.append(message)
+        elif isinstance(content, list):
+            # Convert image_url format to the format processors expect
+            new_content = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "image_url":
+                        # Convert to simple image type that processors understand
+                        new_content.append({"type": "image"})
+                    else:
+                        new_content.append(item)
+                else:
+                    new_content.append(item)
+            text_only.append({"role": message["role"], "content": new_content})
+        else:
+            text_only.append(message)
+    return text_only
+
+
+def try_load_processor(model_name: str) -> Optional[Any]:
+    """Try to load a processor for VL models.
+
+    Args:
+        model_name: HuggingFace model name or path.
+
+    Returns:
+        Processor if the model has one, None otherwise.
+    """
+    try:
+        from transformers import AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        # Check if this is actually a VL processor by looking for image processing capability
+        if hasattr(processor, "image_processor") or "VL" in type(processor).__name__:
+            logger.info(f"Loaded VL processor for model: {model_name}")
+            return processor
+        return None
+    except Exception as e:
+        logger.debug(f"No processor available for {model_name}: {e}")
+        return None
+
+
+def apply_chat_template_with_images(
+    processor_or_tokenizer,
+    conversation: ConversationType,
+    add_generation_prompt: bool = True,
+    chat_template: Optional[str] = None,
+    **kwargs,
+) -> List[int]:
+    """Apply chat template handling both text-only and multimodal conversations.
+
+    For VL models (with processor), this converts multimodal messages to the format
+    the processor expects and applies the chat template correctly.
+
+    For text-only models (tokenizer only), this extracts text and uses the tokenizer.
+
+    Args:
+        processor_or_tokenizer: Either a HuggingFace processor (VL) or tokenizer.
+        conversation: List of message dicts.
+        add_generation_prompt: Whether to add generation prompt.
+        chat_template: Optional custom chat template.
+        **kwargs: Additional kwargs for apply_chat_template.
+
+    Returns:
+        List of token IDs.
+    """
+    # Check if we have a processor (VL model) or just a tokenizer
+    has_processor = hasattr(processor_or_tokenizer, "image_processor") or hasattr(processor_or_tokenizer, "tokenizer")
+
+    if has_processor and is_multimodal_conversation(conversation):
+        # VL model with multimodal content - use processor
+        processor = processor_or_tokenizer
+        # Convert conversation to format processor expects
+        converted = convert_to_text_only_conversation(conversation)
+
+        # Get text with image placeholders
+        text = processor.apply_chat_template(
+            converted,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+            **kwargs,
+        )
+
+        # Tokenize the text (processor.tokenizer or processor itself)
+        tokenizer = getattr(processor, "tokenizer", processor)
+        token_ids = tokenizer.encode(text, add_special_tokens=False)
+        return token_ids
+    else:
+        # Text-only model or text-only conversation - use tokenizer directly
+        tokenizer = getattr(processor_or_tokenizer, "tokenizer", processor_or_tokenizer)
+
+        # For multimodal conversations, extract just the text
+        if is_multimodal_conversation(conversation):
+            text_conversation = []
+            for msg in conversation:
+                content = msg.get("content")
+                if isinstance(content, list):
+                    text = get_text_from_multimodal_content(content)
+                    text_conversation.append({"role": msg["role"], "content": text})
+                else:
+                    text_conversation.append(msg)
+            conversation = text_conversation
+
+        return tokenizer.apply_chat_template(
+            conversation,
+            add_generation_prompt=add_generation_prompt,
+            tokenize=True,
+            chat_template=chat_template,
+            **kwargs,
+        )

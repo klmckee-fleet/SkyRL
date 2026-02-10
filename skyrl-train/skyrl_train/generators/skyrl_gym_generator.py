@@ -28,6 +28,8 @@ from skyrl_train.generators.utils import (
     get_rollout_metrics,
     is_multimodal_conversation,
     extract_images_from_conversation,
+    try_load_processor,
+    apply_chat_template_with_images,
 )
 
 
@@ -129,6 +131,10 @@ class SkyRLGymGenerator(GeneratorInterface):
         self.skyrl_gym_cfg = skyrl_gym_cfg
         self.inference_engine_client = inference_engine_client
         self.tokenizer = tokenizer
+        self.model_name = model_name
+        # Try to load processor for VL models (optional, falls back to tokenizer)
+        self.processor = try_load_processor(model_name)
+        self.is_vl_model = self.processor is not None
         self.max_turns = generator_cfg.max_turns
         self.trajectory_timeout_seconds = getattr(generator_cfg, "trajectory_timeout_seconds", 600)
         self.batched = generator_cfg.batched
@@ -186,6 +192,44 @@ class SkyRLGymGenerator(GeneratorInterface):
 
             if not self.use_conversation_multi_turn:
                 raise ValueError("`step_wise_trajectories` doesn't support `use_conversation_multi_turn=False`")
+
+    def _apply_chat_template(
+        self,
+        conversation: ConversationType,
+        add_generation_prompt: bool = True,
+        chat_template: Optional[str] = None,
+        **kwargs,
+    ) -> List[int]:
+        """Apply chat template handling both VL and text-only models.
+
+        For VL models (with processor), this handles multimodal messages correctly.
+        For text-only models, this uses the tokenizer directly.
+
+        Args:
+            conversation: List of message dicts.
+            add_generation_prompt: Whether to add generation prompt.
+            chat_template: Optional custom chat template.
+            **kwargs: Additional kwargs for apply_chat_template.
+
+        Returns:
+            List of token IDs.
+        """
+        if self.is_vl_model and is_multimodal_conversation(conversation):
+            return apply_chat_template_with_images(
+                self.processor,
+                conversation,
+                add_generation_prompt=add_generation_prompt,
+                chat_template=chat_template,
+                **kwargs,
+            )
+        else:
+            return self.tokenizer.apply_chat_template(
+                conversation,
+                add_generation_prompt=add_generation_prompt,
+                tokenize=True,
+                chat_template=chat_template,
+                **kwargs,
+            )
 
     async def _run_in_executor_if_available(self, func, *args, **kwargs):
         if (executor := self.env_executor) is not None:
@@ -278,10 +322,9 @@ class SkyRLGymGenerator(GeneratorInterface):
                 f"[env={env_key}] Environment init failed for session {session_id}: {e}. Returning zero-reward trajectory."
             )
             # Return a minimal failed trajectory with zero reward
-            prompt_ids = self.tokenizer.apply_chat_template(
+            prompt_ids = self._apply_chat_template(
                 chat_history,
                 add_generation_prompt=True,
-                tokenize=True,
                 **self.generator_cfg.chat_template_kwargs,
             )
             # Use token-level reward format [0.0] to match normal trajectories when custom_chat_template is None
@@ -301,13 +344,12 @@ class SkyRLGymGenerator(GeneratorInterface):
                 return StepWiseOutput(step_outputs=[init_fail_output])
             return init_fail_output
         initial_chat_history_length = len(chat_history)
-        initial_input_ids = self.tokenizer.apply_chat_template(
+        initial_input_ids = self._apply_chat_template(
             chat_history,
             # If retokenize_chat_history==True, avoid including the generation prompt in both the
             # prompt_ids and response_ids due to how `response_encodings["input_ids"]` works.
             add_generation_prompt=not retokenize_chat_history,
             chat_template=self.custom_chat_template if retokenize_chat_history else None,
-            tokenize=True,
             **self.generator_cfg.chat_template_kwargs,
         )
 
@@ -378,11 +420,10 @@ class SkyRLGymGenerator(GeneratorInterface):
                 # 1. Generate output
                 if is_step_wise or retokenize_chat_history:
                     # re-apply whole chat template so length check is correct
-                    agent_loop_state.input_ids = self.tokenizer.apply_chat_template(
+                    agent_loop_state.input_ids = self._apply_chat_template(
                         chat_history,
                         chat_template=self.custom_chat_template if retokenize_chat_history else None,
                         add_generation_prompt=True,
-                        tokenize=True,
                         **self.generator_cfg.chat_template_kwargs,
                     )
                     agent_loop_state.loss_mask = []
@@ -844,11 +885,16 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Close the environment
             await self._env_close(env)
 
-        prompt_token_ids = self.tokenizer.apply_chat_template(
-            init_prompts,
-            add_generation_prompt=True,
-            tokenize=True,
-        )
+        # For batched mode, init_prompts is a list of prompts that could be multimodal
+        # We need to process each prompt individually for VL models
+        if self.is_vl_model and any(is_multimodal_conversation(p) for p in init_prompts):
+            prompt_token_ids = [self._apply_chat_template(p, add_generation_prompt=True) for p in init_prompts]
+        else:
+            prompt_token_ids = self.tokenizer.apply_chat_template(
+                init_prompts,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 
         if self.generator_cfg.apply_overlong_filtering:
