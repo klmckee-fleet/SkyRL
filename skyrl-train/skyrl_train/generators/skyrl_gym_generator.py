@@ -26,6 +26,8 @@ from skyrl_train.generators.utils import (
     get_generation_prompt_ids,
     apply_overlong_filtering,
     get_rollout_metrics,
+    is_multimodal_conversation,
+    extract_images_from_conversation,
 )
 
 
@@ -46,6 +48,8 @@ class TrajectoryOutput:
     prompt_ids: List[int]
     rollout_logprobs: Optional[List[float]]
     env_metrics: Dict[str, Any]
+    # Multimodal data for VL models (images accumulated up to this point)
+    multi_modal_data: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -63,6 +67,8 @@ class AgentLoopState:
     rollout_logprobs: Optional[List[float]]
     response_end_idx: Optional[int]
     done: bool
+    # Accumulated images for VL models
+    accumulated_images: Optional[List[Any]] = None
 
 
 @dataclass
@@ -319,6 +325,12 @@ class SkyRLGymGenerator(GeneratorInterface):
         agent_loop_output = StepWiseOutput(step_outputs=[]) if is_step_wise else None
 
         get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
+
+        # Extract initial images from the prompt for VL models
+        initial_images = (
+            extract_images_from_conversation(chat_history) if is_multimodal_conversation(chat_history) else []
+        )
+
         agent_loop_state = AgentLoopState(
             chat_history=chat_history,
             input_ids=initial_input_ids,
@@ -326,6 +338,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             rollout_logprobs=[] if get_logprobs else None,
             response_end_idx=None,
             done=False,
+            accumulated_images=initial_images if initial_images else None,
         )
 
         # Track trajectory start time for timeout
@@ -379,10 +392,16 @@ class SkyRLGymGenerator(GeneratorInterface):
                         stop_reason = "length"
                         break
 
+                # Build multimodal data for VL models if images are present
+                mm_data = None
+                if agent_loop_state.accumulated_images:
+                    mm_data = [{"image": agent_loop_state.accumulated_images}]
+
                 engine_input = InferenceEngineInput(
                     prompt_token_ids=[agent_loop_state.input_ids],
                     session_ids=[session_id],
                     sampling_params=sampling_params,
+                    multi_modal_data=mm_data,
                 )
                 try:
                     remaining = (
@@ -440,6 +459,14 @@ class SkyRLGymGenerator(GeneratorInterface):
                 step_reward: float = env_step_output["reward"]
                 agent_loop_state.done = env_step_output["done"]
 
+                # Extract and accumulate images from observations for VL models
+                if new_obs and is_multimodal_conversation(new_obs):
+                    new_images = extract_images_from_conversation(new_obs)
+                    if new_images:
+                        if agent_loop_state.accumulated_images is None:
+                            agent_loop_state.accumulated_images = []
+                        agent_loop_state.accumulated_images.extend(new_images)
+
                 # Inject context status into observation if enabled
                 # This helps models learn when to use context management tools
                 if getattr(self.generator_cfg, "inject_context_status", False) and new_obs:
@@ -485,6 +512,11 @@ class SkyRLGymGenerator(GeneratorInterface):
                     turn_loss_mask = turn_output.get_turn_loss_mask()
                     turn_response_logprobs: Optional[List[float]] = turn_output.get_turn_rollout_logprobs()
 
+                    # Capture multimodal data for this step (copy to avoid mutation)
+                    step_mm_data = None
+                    if agent_loop_state.accumulated_images:
+                        step_mm_data = {"image": list(agent_loop_state.accumulated_images)}
+
                     per_step_output = TrajectoryOutput(
                         response_ids=turn_response_ids,
                         reward=step_reward,
@@ -493,6 +525,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                         rollout_logprobs=turn_response_logprobs,
                         stop_reason=stop_reason,
                         env_metrics=env.get_metrics() if agent_loop_state.done else {},
+                        multi_modal_data=step_mm_data,
                     )
                     agent_loop_output.step_outputs.append(per_step_output)
 
@@ -625,6 +658,11 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             reward_out = self._build_per_token_rewards(per_step_rewards, response_ids, appended_eos_token)
 
+            # Include multimodal data for VL models
+            final_mm_data = None
+            if agent_loop_state.accumulated_images:
+                final_mm_data = {"image": agent_loop_state.accumulated_images}
+
             agent_loop_output = TrajectoryOutput(
                 response_ids=response_ids,
                 reward=reward_out,
@@ -633,6 +671,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                 prompt_ids=prompt_ids,
                 rollout_logprobs=rollout_logprobs,
                 env_metrics=env_metrics,
+                multi_modal_data=final_mm_data,
             )
 
         return agent_loop_output

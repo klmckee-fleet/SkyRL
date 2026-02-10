@@ -539,3 +539,135 @@ def get_response_ids_and_loss_mask_from_messages(messages: ConversationType, tok
         assert len(rollout_logprobs) == len(response_ids) if rollout_logprobs is not None else True
 
     return response_ids, loss_mask, rollout_logprobs
+
+
+# --- Multimodal/VL Utilities ---
+
+
+def is_multimodal_message(message: Dict[str, Any]) -> bool:
+    """Check if a message contains multimodal content (images).
+
+    Args:
+        message: A message dict with 'role' and 'content' keys.
+
+    Returns:
+        True if the message contains image content, False otherwise.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return False
+    if isinstance(content, list):
+        return any(isinstance(item, dict) and item.get("type") == "image_url" for item in content)
+    return False
+
+
+def is_multimodal_conversation(conversation: ConversationType) -> bool:
+    """Check if any message in a conversation contains multimodal content.
+
+    Args:
+        conversation: List of message dicts.
+
+    Returns:
+        True if any message contains image content, False otherwise.
+    """
+    return any(is_multimodal_message(msg) for msg in conversation)
+
+
+def extract_images_from_conversation(conversation: ConversationType) -> List[Any]:
+    """Extract all images from a conversation in order.
+
+    Supports:
+    - Base64 data URLs: "data:image/png;base64,..."
+    - File paths (loaded as PIL Images)
+    - URLs (returned as-is for the model to fetch)
+
+    Args:
+        conversation: List of message dicts.
+
+    Returns:
+        List of PIL Images or image URLs/paths.
+    """
+    images = []
+    for message in conversation:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "image_url":
+                continue
+            image_url_data = item.get("image_url", {})
+            url = image_url_data.get("url", "")
+            if url.startswith("data:image"):
+                # Base64 encoded image
+                images.append(decode_base64_image(url))
+            elif url.startswith(("http://", "https://")):
+                # Remote URL - pass as-is (vLLM can fetch it)
+                images.append(url)
+            elif url:
+                # Local file path
+                images.append(load_image_from_path(url))
+    return images
+
+
+def decode_base64_image(data_url: str) -> "PIL.Image.Image":
+    """Decode a base64 image from a data URL.
+
+    Args:
+        data_url: Data URL in format "data:image/png;base64,<base64_data>"
+
+    Returns:
+        PIL Image object.
+    """
+    import base64
+    import io
+
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("PIL/Pillow is required for multimodal support. Install with: pip install pillow")
+
+    # Extract base64 data after the comma
+    if "," in data_url:
+        base64_data = data_url.split(",", 1)[1]
+    else:
+        base64_data = data_url
+
+    image_bytes = base64.b64decode(base64_data)
+    return Image.open(io.BytesIO(image_bytes))
+
+
+def load_image_from_path(path: str) -> "PIL.Image.Image":
+    """Load an image from a file path.
+
+    Args:
+        path: Path to the image file.
+
+    Returns:
+        PIL Image object.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("PIL/Pillow is required for multimodal support. Install with: pip install pillow")
+
+    return Image.open(path)
+
+
+def get_text_from_multimodal_content(content: Any) -> str:
+    """Extract text from multimodal content, ignoring images.
+
+    Args:
+        content: Either a string or a list of content items.
+
+    Returns:
+        Concatenated text from all text items.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                texts.append(item.get("text", ""))
+        return " ".join(texts)
+    return ""
