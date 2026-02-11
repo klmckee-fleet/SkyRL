@@ -94,14 +94,22 @@ class HFModelWrapper(nn.Module):
             else:
                 nf4_config = None
 
+            model_config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True, **model_config_kwargs)
+
+            # Detect VL (Vision-Language) models by config class name
+            is_vl_model = "VL" in model_config.__class__.__name__ or hasattr(model_config, "vision_config")
+
             if use_liger_kernel:
                 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
                 model_class = AutoLigerKernelForCausalLM
+            elif is_vl_model:
+                from transformers import AutoModelForVision2Seq
+
+                model_class = AutoModelForVision2Seq
+                logger.info(f"Detected VL model config: {model_config.__class__.__name__}, using AutoModelForVision2Seq")
             else:
                 model_class = AutoModelForCausalLM
-
-            model_config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True, **model_config_kwargs)
 
             # Set rope_scaling on config (not as kwarg to from_pretrained)
             if rope_scaling:
