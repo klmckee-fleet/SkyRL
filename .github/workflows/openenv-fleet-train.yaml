@@ -119,6 +119,8 @@ jobs:
           RUN_ID=$(head -c 4 /dev/urandom | xxd -p)
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
           echo "wandb_run_name=fleet_${RUN_ID}" >> $GITHUB_OUTPUT
+          MODALITY=$(grep -E '^\s+MODALITY:' skyrl-train/tasks/${{ inputs.task_name }}.yaml | awk -F'"' '{print $2}')
+          echo "modality=$MODALITY" >> $GITHUB_OUTPUT
 
       - name: Notify Slack - Starting
         if: ${{ inputs.disable_slack != true }}
@@ -136,7 +138,8 @@ jobs:
                 { "type": "section", "fields": [
                   { "type": "mrkdwn", "text": "*Cluster:*\n`${{ steps.cluster.outputs.name }}`" },
                   { "type": "mrkdwn", "text": "*Task:*\n`${{ inputs.task_name }}`" },
-                  { "type": "mrkdwn", "text": "*WandB:*\n`${{ steps.cluster.outputs.wandb_run_name }}`" }
+                  { "type": "mrkdwn", "text": "*WandB:*\n`${{ steps.cluster.outputs.wandb_run_name }}`" },
+                  { "type": "mrkdwn", "text": "*Modality:*\n`${{ steps.cluster.outputs.modality }}`" }
                 ]},
                 { "type": "context", "elements": [
                   { "type": "mrkdwn", "text": "Triggered by: ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow> | <https://wandb.ai/thefleet/fleet-task-grpo|WandB>" }
