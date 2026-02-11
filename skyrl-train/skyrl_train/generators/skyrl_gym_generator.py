@@ -386,6 +386,12 @@ class SkyRLGymGenerator(GeneratorInterface):
         # Track trajectory start time for timeout
         trajectory_start_time = time.time()
 
+        # Debug logging for prompt length issues
+        logger.debug(
+            f"Session {session_id}: initial_prompt_length={initial_prompt_length}, "
+            f"max_input_length={max_input_length}, input_ids_type={type(initial_input_ids)}"
+        )
+
         try:
             while not agent_loop_state.done:
                 # Check for trajectory timeout at the start of each turn
@@ -414,6 +420,27 @@ class SkyRLGymGenerator(GeneratorInterface):
                         return early_timeout_output
 
                 if len(agent_loop_state.input_ids) > max_input_length:
+                    # If this happens before any turn, response_end_idx is None.
+                    # Return zero-reward trajectory instead of crashing in post-processing.
+                    if agent_loop_state.response_end_idx is None:
+                        logger.warning(
+                            f"Prompt exceeds max_input_length before first turn for session {session_id}: "
+                            f"{len(agent_loop_state.input_ids)} > {max_input_length}. Returning zero-reward trajectory."
+                        )
+                        await self._run_in_executor_if_available(env.close)
+                        zero_reward = 0.0 if self.custom_chat_template else [0.0]
+                        prompt_too_long_output = TrajectoryOutput(
+                            response_ids=[self.tokenizer.eos_token_id],
+                            reward=zero_reward,
+                            stop_reason="prompt_too_long",
+                            loss_mask=[0],
+                            prompt_ids=initial_input_ids,
+                            rollout_logprobs=[0.0],
+                            env_metrics={"prompt_too_long": 1.0, "initial_prompt_length": float(initial_prompt_length)},
+                        )
+                        if is_step_wise:
+                            return StepWiseOutput(step_outputs=[prompt_too_long_output])
+                        return prompt_too_long_output
                     stop_reason = "length"
                     break
 
