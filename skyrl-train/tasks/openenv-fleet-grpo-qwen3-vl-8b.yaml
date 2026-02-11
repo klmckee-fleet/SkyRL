@@ -21,30 +21,15 @@ resources:
     - accelerators: B200:4
       cloud: runpod
       memory: 750+
-    - accelerators: B200:4
-      cloud: vast
-      memory: 750+
-    - accelerators: B200:4
-      cloud: primeintellect
-      memory: 750+
-    - accelerators: B200:4
-      cloud: nebius
-      memory: 750+
-    # Fallback to H200:4 (141GB HBM3e per GPU)
-    - accelerators: H200:4
-      cloud: lambda
-      memory: 750+
-    - accelerators: H200:4
+    # Fallback to H200-SXM:4 (correct naming for RunPod/Nebius)
+    - accelerators: H200-SXM:4
       cloud: runpod
       memory: 750+
-    - accelerators: H200:4
-      cloud: vast
-      memory: 750+
-    - accelerators: H200:4
-      cloud: primeintellect
-      memory: 750+
-    - accelerators: H200:4
+    - accelerators: H200-SXM:4
       cloud: nebius
+      memory: 750+
+    - accelerators: H200-SXM:4
+      cloud: lambda
       memory: 750+
 
 num_nodes: 1
