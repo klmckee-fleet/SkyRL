@@ -417,22 +417,48 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             )
 
         # Build response observation
+        # For VL models, tool_result may contain images in OpenAI-compatible format:
+        # [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:..."}}]
         if error:
             self.tool_errors += 1
             obs_content = f"Error: {error}"
+            new_obs = {"role": "user", "content": obs_content}
         elif tool_result:
-            if isinstance(tool_result, dict):
+            # Check if tool_result contains images (list with image_url items)
+            if isinstance(tool_result, list) and any(
+                isinstance(item, dict) and item.get("type") == "image_url" for item in tool_result
+            ):
+                # Multimodal result - create OpenAI-compatible content array
+                content_parts = []
+                for item in tool_result:
+                    if isinstance(item, dict):
+                        if item.get("type") == "image_url":
+                            content_parts.append(item)
+                        elif item.get("type") == "text":
+                            content_parts.append({"type": "text", "text": f"Tool result:\n{item.get('text', '')}"})
+                        else:
+                            # Unknown type - convert to text
+                            content_parts.append(
+                                {"type": "text", "text": f"Tool result:\n{json.dumps(item, indent=2)}"}
+                            )
+                    else:
+                        content_parts.append({"type": "text", "text": f"Tool result:\n{str(item)}"})
+                new_obs = {"role": "user", "content": content_parts}
+            elif isinstance(tool_result, dict):
                 obs_content = f"Tool result:\n{json.dumps(tool_result, indent=2)}"
+                new_obs = {"role": "user", "content": obs_content}
             else:
                 obs_content = f"Tool result:\n{tool_result}"
+                new_obs = {"role": "user", "content": obs_content}
         elif agent_done:
             obs_content = "Task marked as complete."
+            new_obs = {"role": "user", "content": obs_content}
         elif not tool_call:
             obs_content = 'No tool call found. Use <tool_call>{"name": "...", "arguments": {...}}</tool_call> format.'
+            new_obs = {"role": "user", "content": obs_content}
         else:
             obs_content = "Action executed."
-
-        new_obs = {"role": "user", "content": obs_content}
+            new_obs = {"role": "user", "content": obs_content}
         self.chat_history.append(new_obs)
         if self.context_manager:
             self.context_manager.track_message(new_obs)
