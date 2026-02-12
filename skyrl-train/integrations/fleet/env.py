@@ -305,7 +305,21 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         # Build conversation with system prompt
         system_message = {"role": "system", "content": system_content}
-        user_message = {"role": "user", "content": task_prompt}
+
+        # For computer_use with initial screenshot, create multimodal user message
+        initial_screenshot = obs.get("initial_screenshot")
+        if initial_screenshot and isinstance(initial_screenshot, list):
+            # Build multimodal content: task prompt + screenshot
+            user_content = [{"type": "text", "text": task_prompt}]
+            # Add images from screenshot result
+            for item in initial_screenshot:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    user_content.append(item)
+            user_message = {"role": "user", "content": user_content}
+            logger.info(f"Task {self.task_key}: included initial screenshot in user message")
+        else:
+            user_message = {"role": "user", "content": task_prompt}
+
         self.chat_history = [system_message, user_message]
 
         metadata = {
