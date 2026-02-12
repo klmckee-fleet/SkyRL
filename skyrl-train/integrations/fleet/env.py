@@ -355,11 +355,14 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         max_turns_reached = self.turns >= self.max_turns
 
-        # Check if agent signals completion
-        agent_done = "<done>" in action.lower() or "[done]" in action.lower()
-
         # Parse tool call from LLM response
         tool_call = parse_tool_call(action)
+
+        # Check if agent signals completion
+        # Only consider <done> if there's NO tool call - if there's a tool call,
+        # we need to execute it and see the result before ending the episode
+        has_done_signal = "<done>" in action.lower() or "[done]" in action.lower()
+        agent_done = has_done_signal and not tool_call
 
         tool_result = None
         error = None
