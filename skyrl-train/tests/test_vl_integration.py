@@ -91,10 +91,7 @@ def test_multimodal_utils():
         if isinstance(content, str):
             return False
         if isinstance(content, list):
-            return any(
-                isinstance(item, dict) and item.get("type") == "image_url"
-                for item in content
-            )
+            return any(isinstance(item, dict) and item.get("type") == "image_url" for item in content)
         return False
 
     def is_multimodal_conversation(conversation):
@@ -278,11 +275,7 @@ def test_vllm_prompt_construction():
     # Construct prompts as vllm_engine would
     prompts = []
     for i, token_ids in enumerate(prompt_token_ids):
-        mm_data = (
-            multi_modal_data[i]
-            if multi_modal_data and i < len(multi_modal_data)
-            else None
-        )
+        mm_data = multi_modal_data[i] if multi_modal_data and i < len(multi_modal_data) else None
         if mm_data:
             # Dict format for multimodal
             prompts.append({"prompt_token_ids": token_ids, "multi_modal_data": mm_data})
@@ -299,9 +292,7 @@ def test_vllm_prompt_construction():
     for i, token_ids in enumerate([[6, 7, 8]]):
         mm_data = None  # No multimodal data
         if mm_data:
-            text_prompts.append(
-                {"prompt_token_ids": token_ids, "multi_modal_data": mm_data}
-            )
+            text_prompts.append({"prompt_token_ids": token_ids, "multi_modal_data": mm_data})
         else:
             text_prompts.append({"prompt_token_ids": token_ids})
 

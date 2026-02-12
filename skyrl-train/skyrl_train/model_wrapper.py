@@ -107,7 +107,9 @@ class HFModelWrapper(nn.Module):
                 from transformers import AutoModelForVision2Seq
 
                 model_class = AutoModelForVision2Seq
-                logger.info(f"Detected VL model config: {model_config.__class__.__name__}, using AutoModelForVision2Seq")
+                logger.info(
+                    f"Detected VL model config: {model_config.__class__.__name__}, using AutoModelForVision2Seq"
+                )
             else:
                 model_class = AutoModelForCausalLM
 

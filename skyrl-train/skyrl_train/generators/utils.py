@@ -1,6 +1,9 @@
 import os
 import torch
-from typing import List, Tuple, Union, Optional, Dict, Any
+from typing import List, Tuple, Union, Optional, Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL import Image
 from collections import defaultdict
 import numpy as np
 from skyrl_train.generators.base import (
@@ -609,7 +612,7 @@ def extract_images_from_conversation(conversation: ConversationType) -> List[Any
     return images
 
 
-def decode_base64_image(data_url: str) -> "PIL.Image.Image":
+def decode_base64_image(data_url: str) -> "Image.Image":
     """Decode a base64 image from a data URL.
 
     Args:
@@ -636,7 +639,7 @@ def decode_base64_image(data_url: str) -> "PIL.Image.Image":
     return Image.open(io.BytesIO(image_bytes))
 
 
-def load_image_from_path(path: str) -> "PIL.Image.Image":
+def load_image_from_path(path: str) -> "Image.Image":
     """Load an image from a file path.
 
     Args:
