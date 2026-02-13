@@ -229,10 +229,19 @@ class FleetTaskEnv(BaseTextEnv):
         screenshot_val = obs.get("initial_screenshot") if isinstance(obs, dict) else None
         screenshot_type = type(screenshot_val).__name__ if screenshot_val else "None"
         screenshot_len = len(screenshot_val) if isinstance(screenshot_val, list) else 0
+        # Log first item structure if it's a list
+        first_item_type = None
+        first_item_keys = None
+        if isinstance(screenshot_val, list) and screenshot_val:
+            first_item = screenshot_val[0]
+            first_item_type = type(first_item).__name__
+            if isinstance(first_item, dict):
+                first_item_keys = list(first_item.keys())
         logger.info(
             f"Task {self.task_key}: obs from reset - keys={obs_keys}, "
             f"has_screenshot={has_screenshot}, screenshot_type={screenshot_type}, "
-            f"screenshot_len={screenshot_len}"
+            f"screenshot_len={screenshot_len}, first_item_type={first_item_type}, "
+            f"first_item_keys={first_item_keys}"
         )
 
         # Reset state
@@ -345,6 +354,16 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             logger.info(f"Task {self.task_key}: no screenshot - using text-only user message")
 
         self.chat_history = [system_message, user_message]
+
+        # Debug: verify user message content
+        user_content_type = type(user_message.get("content")).__name__
+        user_content_len = (
+            len(user_message.get("content", "")) if isinstance(user_message.get("content"), (str, list)) else 0
+        )
+        logger.info(
+            f"Task {self.task_key}: final user_message content_type={user_content_type}, "
+            f"content_len={user_content_len}"
+        )
 
         metadata = {
             "task_key": self.task_key,
