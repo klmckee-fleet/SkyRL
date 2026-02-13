@@ -471,6 +471,13 @@ class SkyRLGymGenerator(GeneratorInterface):
                 mm_data = None
                 if agent_loop_state.accumulated_images:
                     mm_data = [{"image": agent_loop_state.accumulated_images}]
+                    # Log VL inference details for first turn
+                    if agent_loop_state.response_end_idx is None:
+                        logger.info(
+                            f"Session {session_id}: VL inference with "
+                            f"{len(agent_loop_state.accumulated_images)} images, "
+                            f"{len(agent_loop_state.input_ids)} input tokens"
+                        )
 
                 engine_input = InferenceEngineInput(
                     prompt_token_ids=[agent_loop_state.input_ids],

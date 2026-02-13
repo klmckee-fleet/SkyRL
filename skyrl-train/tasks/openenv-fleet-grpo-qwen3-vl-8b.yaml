@@ -185,6 +185,7 @@ run: |
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.7 \
+    '+generator.engine_init_kwargs.limit_mm_per_prompt={"image": 20, "video": 0}' \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-browser-use-grpo" \
     trainer.run_name="fleet_vl_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \

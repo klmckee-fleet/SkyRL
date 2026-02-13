@@ -363,11 +363,14 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         # Log the model output for debugging early termination
         if self.turns == 1:
+            # Log full output for turn 1 to diagnose early termination
             logger.info(
-                f"Task {self.task_key} turn 1: "
-                f"has_tool_call={tool_call is not None}, "
-                f"has_done_signal={has_done_signal}, "
-                f"action_preview={action[:200]}..."
+                f"Task {self.task_key} turn 1 FULL OUTPUT:\n"
+                f"has_tool_call={tool_call is not None}\n"
+                f"has_done_signal={has_done_signal}\n"
+                f"agent_done={has_done_signal and not tool_call}\n"
+                f"action_length={len(action)}\n"
+                f"action='''{action[:500]}'''"
             )
 
         # Only consider <done> if there's NO tool call - if there's a tool call,
