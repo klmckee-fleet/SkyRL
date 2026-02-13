@@ -359,9 +359,19 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
         tool_call = parse_tool_call(action)
 
         # Check if agent signals completion
+        has_done_signal = "<done>" in action.lower() or "[done]" in action.lower()
+
+        # Log the model output for debugging early termination
+        if self.turns == 1:
+            logger.info(
+                f"Task {self.task_key} turn 1: "
+                f"has_tool_call={tool_call is not None}, "
+                f"has_done_signal={has_done_signal}, "
+                f"action_preview={action[:200]}..."
+            )
+
         # Only consider <done> if there's NO tool call - if there's a tool call,
         # we need to execute it and see the result before ending the episode
-        has_done_signal = "<done>" in action.lower() or "[done]" in action.lower()
         agent_done = has_done_signal and not tool_call
 
         tool_result = None

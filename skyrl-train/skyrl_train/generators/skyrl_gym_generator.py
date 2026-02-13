@@ -373,6 +373,13 @@ class SkyRLGymGenerator(GeneratorInterface):
             extract_images_from_conversation(chat_history) if is_multimodal_conversation(chat_history) else []
         )
 
+        # Log VL model image extraction for debugging
+        if self.is_vl_model:
+            is_mm = is_multimodal_conversation(chat_history)
+            logger.info(
+                f"Session {session_id}: VL model, is_multimodal={is_mm}, " f"extracted_images={len(initial_images)}"
+            )
+
         agent_loop_state = AgentLoopState(
             chat_history=chat_history,
             input_ids=initial_input_ids,
