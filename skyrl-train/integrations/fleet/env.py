@@ -223,27 +223,6 @@ class FleetTaskEnv(BaseTextEnv):
         # Reset episode state (tools are already cached from __init__)
         obs = await self.openenv_task_env.reset_async()
 
-        # Debug: log what we got from OpenEnv
-        obs_keys = list(obs.keys()) if isinstance(obs, dict) else "NOT_A_DICT"
-        has_screenshot = "initial_screenshot" in obs if isinstance(obs, dict) else False
-        screenshot_val = obs.get("initial_screenshot") if isinstance(obs, dict) else None
-        screenshot_type = type(screenshot_val).__name__ if screenshot_val else "None"
-        screenshot_len = len(screenshot_val) if isinstance(screenshot_val, list) else 0
-        # Log first item structure if it's a list
-        first_item_type = None
-        first_item_keys = None
-        if isinstance(screenshot_val, list) and screenshot_val:
-            first_item = screenshot_val[0]
-            first_item_type = type(first_item).__name__
-            if isinstance(first_item, dict):
-                first_item_keys = list(first_item.keys())
-        logger.info(
-            f"Task {self.task_key}: obs from reset - keys={obs_keys}, "
-            f"has_screenshot={has_screenshot}, screenshot_type={screenshot_type}, "
-            f"screenshot_len={screenshot_len}, first_item_type={first_item_type}, "
-            f"first_item_keys={first_item_keys}"
-        )
-
         # Reset state
         self.turns = 0
         self.tool_calls = 0
@@ -264,9 +243,6 @@ class FleetTaskEnv(BaseTextEnv):
 
         # Build initial prompt with task instruction
         task_prompt = self.task_config.get("prompt", "")
-
-        # Get initial screenshot for computer_use tasks (VL models need visual input)
-        self.initial_screenshot = obs.get("initial_screenshot")
 
         # Build system prompt with tool definitions
         tools_json = json.dumps(self.tools, indent=2)
@@ -332,38 +308,19 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         # For computer_use with initial screenshot, create multimodal user message
         initial_screenshot = obs.get("initial_screenshot")
-        logger.info(
-            f"Task {self.task_key}: screenshot check - "
-            f"exists={initial_screenshot is not None}, "
-            f"is_list={isinstance(initial_screenshot, list)}, "
-            f"type={type(initial_screenshot).__name__}"
-        )
         if initial_screenshot and isinstance(initial_screenshot, list):
             # Build multimodal content: task prompt + screenshot
             user_content = [{"type": "text", "text": task_prompt}]
             # Add images from screenshot result
-            image_count = 0
             for item in initial_screenshot:
                 if isinstance(item, dict) and item.get("type") == "image_url":
                     user_content.append(item)
-                    image_count += 1
             user_message = {"role": "user", "content": user_content}
-            logger.info(f"Task {self.task_key}: included {image_count} images in user message")
+            logger.info(f"Task {self.task_key}: included initial screenshot in user message")
         else:
             user_message = {"role": "user", "content": task_prompt}
-            logger.info(f"Task {self.task_key}: no screenshot - using text-only user message")
 
         self.chat_history = [system_message, user_message]
-
-        # Debug: verify user message content
-        user_content_type = type(user_message.get("content")).__name__
-        user_content_len = (
-            len(user_message.get("content", "")) if isinstance(user_message.get("content"), (str, list)) else 0
-        )
-        logger.info(
-            f"Task {self.task_key}: final user_message content_type={user_content_type}, "
-            f"content_len={user_content_len}"
-        )
 
         metadata = {
             "task_key": self.task_key,
