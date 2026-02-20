@@ -47,7 +47,7 @@ envs:
   # Difficulty filter: 1=easy, 2=medium, 3=hard (comma-separated, e.g., "1,2" for easy+medium)
   DIFFICULTY: ""
   MODALITY: "computer_use"
-  MAX_TURNS: 20
+  MAX_TURNS: 50
   MAX_INPUT_LENGTH: 65536
   MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 10
