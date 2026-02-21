@@ -137,6 +137,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         self.is_vl_model = self.processor is not None
         self.max_turns = generator_cfg.max_turns
         self.trajectory_timeout_seconds = getattr(generator_cfg, "trajectory_timeout_seconds", 600)
+        self.batch_timeout_seconds = getattr(generator_cfg, "batch_timeout_seconds", 0)
         self.batched = generator_cfg.batched
         self.use_conversation_multi_turn = generator_cfg.use_conversation_multi_turn
         # optionally use custom chat template to get loss masks (i.e. for Qwen3)
@@ -255,6 +256,27 @@ class SkyRLGymGenerator(GeneratorInterface):
         if hasattr(env, "close_async"):
             return await env.close_async()
         return await self._run_in_executor_if_available(env.close)
+
+    def _make_batch_timeout_output(
+        self,
+        prompt: ConversationType,
+        zero_reward: Union[float, list],
+        is_step_wise: bool,
+    ) -> Union[TrajectoryOutput, StepWiseOutput]:
+        """Create a zero-reward output for trajectories cancelled by batch timeout."""
+        prompt_ids = self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True)
+        output = TrajectoryOutput(
+            response_ids=[self.tokenizer.eos_token_id],
+            reward=zero_reward,
+            stop_reason="batch_timeout",
+            loss_mask=[0],
+            prompt_ids=prompt_ids,
+            rollout_logprobs=[0.0],
+            env_metrics={"batch_timeout": 1.0},
+        )
+        if is_step_wise:
+            return StepWiseOutput(step_outputs=[output])
+        return output
 
     async def agent_loop(
         self,
@@ -434,7 +456,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                             f"Prompt exceeds max_input_length before first turn for session {session_id}: "
                             f"{len(agent_loop_state.input_ids)} > {max_input_length}. Returning zero-reward trajectory."
                         )
-                        await self._run_in_executor_if_available(env.close)
+                        await self._env_close(env)
                         zero_reward = 0.0 if self.custom_chat_template else [0.0]
                         prompt_too_long_output = TrajectoryOutput(
                             response_ids=[self.tokenizer.eos_token_id],
@@ -978,27 +1000,67 @@ class SkyRLGymGenerator(GeneratorInterface):
             return await self.generate_batched(prompts, env_classes, env_extras, max_tokens, sampling_params)
 
         # Async agent loop to generate trajectories in parallel.
-        tasks = []
+        async_tasks = []
         for i in range(len(prompts)):
-            tasks.append(
-                self.agent_loop(
-                    prompts[i],
-                    env_classes[i],
-                    env_extras[i],
-                    max_tokens,
-                    max_input_length,
-                    sampling_params=sampling_params,
-                    trajectory_id=trajectory_ids[i] if trajectory_ids is not None else None,
-                )
+            coro = self.agent_loop(
+                prompts[i],
+                env_classes[i],
+                env_extras[i],
+                max_tokens,
+                max_input_length,
+                sampling_params=sampling_params,
+                trajectory_id=trajectory_ids[i] if trajectory_ids is not None else None,
             )
+            async_tasks.append(asyncio.ensure_future(coro))
 
-        all_outputs = await tqdm.gather(
-            *tasks,
+        # Compute batch timeout: use configured value, or fall back to 2x per-trajectory timeout
+        batch_timeout = self.batch_timeout_seconds
+        if batch_timeout <= 0 and self.trajectory_timeout_seconds > 0:
+            batch_timeout = self.trajectory_timeout_seconds * 2
+        effective_timeout = batch_timeout if batch_timeout > 0 else None
+
+        # Map tasks to indices for order-preserving result collection
+        task_to_idx = {id(t): i for i, t in enumerate(async_tasks)}
+
+        # Progress bar
+        pbar = tqdm(
+            total=len(async_tasks),
             desc="Generating Trajectories",
-            miniters=max(1, len(tasks) // 10),
+            miniters=max(1, len(async_tasks) // 10),
             mininterval=5,
             disable=disable_tqdm,
         )
+        for t in async_tasks:
+            t.add_done_callback(lambda _: pbar.update(1))
+
+        done, pending = await asyncio.wait(async_tasks, timeout=effective_timeout)
+        pbar.close()
+
+        if pending:
+            logger.warning(
+                f"Batch timeout after {effective_timeout}s: {len(done)}/{len(async_tasks)} done, "
+                f"{len(pending)} pending. Cancelling stuck trajectories."
+            )
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Collect results in original order
+        is_step_wise = self.generator_cfg.step_wise_trajectories
+        zero_reward = 0.0 if self.custom_chat_template else [0.0]
+        all_outputs: list = [None] * len(async_tasks)
+
+        for t in done:
+            idx = task_to_idx[id(t)]
+            if t.exception() is not None:
+                logger.error(f"Trajectory {idx} raised exception: {t.exception()}")
+                all_outputs[idx] = self._make_batch_timeout_output(prompts[idx], zero_reward, is_step_wise)
+            else:
+                all_outputs[idx] = t.result()
+
+        for t in pending:
+            idx = task_to_idx[id(t)]
+            all_outputs[idx] = self._make_batch_timeout_output(prompts[idx], zero_reward, is_step_wise)
 
         if self.generator_cfg.step_wise_trajectories:
             responses = []
@@ -1089,6 +1151,23 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Per-env timeout counts for WandB
             for env, count in timeouts_by_env.items():
                 rollout_metrics[f"environment/{env}/trajectory_timeouts"] = count
+
+        # Log count of batch timeouts by environment
+        batch_timeouts = sum(1 for sr in stop_reasons if sr == "batch_timeout")
+        if batch_timeouts > 0:
+            btimeouts_by_env: Dict[str, int] = {}
+            for env_class, stop_reason in zip(env_classes, stop_reasons):
+                if stop_reason == "batch_timeout":
+                    btimeouts_by_env[env_class] = btimeouts_by_env.get(env_class, 0) + 1
+
+            btimeout_details = ", ".join(f"{env}: {count}" for env, count in sorted(btimeouts_by_env.items()))
+            logger.warning(
+                f"Batch timeouts: {batch_timeouts}/{len(stop_reasons)} trajectories "
+                f"({100 * batch_timeouts / len(stop_reasons):.1f}%) - by env: {btimeout_details}"
+            )
+            rollout_metrics["generate/batch_timeouts"] = batch_timeouts
+            for env, count in btimeouts_by_env.items():
+                rollout_metrics[f"environment/{env}/batch_timeouts"] = count
 
         if self.generator_cfg.zero_reward_on_non_stop:
             # set reward to 0 if the stop reason is not "stop"
