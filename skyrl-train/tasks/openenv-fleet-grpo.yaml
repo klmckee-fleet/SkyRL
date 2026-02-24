@@ -71,6 +71,14 @@ envs:
 
 setup: |
   set -euo pipefail
+
+  # Fix Ray binary permissions (RunPod issue where binaries lose execute permissions)
+  # Must run BEFORE any Ray commands, including SkyPilot's internal cluster verification
+  if [ -d "/root/skypilot-runtime" ]; then
+    echo "Fixing Ray binary permissions..."
+    chmod -R +x /root/skypilot-runtime/lib/python*/site-packages/ray/core/src/ray/ 2>/dev/null || true
+  fi
+
   cd skyrl-train
 
   # Validate required environment variables
