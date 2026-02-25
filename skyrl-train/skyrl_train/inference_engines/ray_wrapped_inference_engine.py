@@ -179,6 +179,11 @@ def create_ray_wrapped_inference_engines(
             if hf_overrides:
                 rope_engine_kwargs["hf_overrides"] = hf_overrides
 
+            # Remove keys from engine_init_kwargs that are already in rope_engine_kwargs
+            # to avoid "got multiple values for keyword argument" when both are unpacked.
+            # Can't use .pop() on OmegaConf DictConfig in struct mode, so filter instead.
+            engine_init_kwargs_filtered = {k: v for k, v in engine_init_kwargs.items() if k not in rope_engine_kwargs}
+
             # Launch one actor per DP rank
             for dp_rank in range(data_parallel_size):
 
@@ -232,7 +237,7 @@ def create_ray_wrapped_inference_engines(
                     max_num_seqs=max_num_seqs,
                     max_logprobs=1,  # only need chosen-token logprobs
                     **dp_kwargs,
-                    **engine_init_kwargs,
+                    **engine_init_kwargs_filtered,
                     **lora_kwargs,
                     **rope_engine_kwargs,
                 )
