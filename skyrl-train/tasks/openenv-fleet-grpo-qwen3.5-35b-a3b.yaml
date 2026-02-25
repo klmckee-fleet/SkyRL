@@ -22,6 +22,10 @@
 #         - 35B params in fp16 ≈ 70GB, fits on single B200 (192GB) with KV cache
 #         - FSDP CPU offload keeps GPU memory low during training
 #         - Reduce batch sizes for 4-GPU config (detected via TOTAL_GPUS)
+# v0.1.3: Fix vLLM install — use HuggingFace model card install command
+#         - --pre with --index-url/--extra-index-url (not --pre alone)
+#         - RunPod has x86_64, nightly index only has latest builds
+#         - Match exact GLM-4.7-Flash install: --index-url pypi --extra-index-url nightly
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -153,8 +157,10 @@ setup: |
   #                      We only need bert_padding (pure Python), vLLM uses FLASHINFER for attention
 
   # Step 1: Install vLLM nightly (required for Qwen3.5-35B-A3B support)
+  # Use --index-strategy unsafe-best-match so uv checks BOTH indexes for x86_64 wheels
+  # Without this, uv locks to whichever index has the package first — nightly may only have aarch64
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  uv pip install vllm --pre --index-url https://pypi.org/simple --extra-index-url https://wheels.vllm.ai/nightly
+  uv pip install vllm --pre --index-url https://pypi.org/simple --extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match
 
   # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
   # - bert_padding: pad_input/unpad_input (used by SkyRL training)
