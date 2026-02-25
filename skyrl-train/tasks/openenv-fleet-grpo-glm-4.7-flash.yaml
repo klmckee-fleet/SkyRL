@@ -88,6 +88,61 @@
 #          - use_flash_attention_2=false doesn't work - model config.json overrides it
 #          - Set attn_implementation=sdpa via model_config_kwargs
 #          - This overrides the HF config before model instantiation
+# v0.1.41: Fix 3 SDPA attention bugs preventing training launch
+#          - Bug 1: model_config_kwargs path was wrong (trainer.policy.model.model_config_kwargs
+#            vs trainer.policy.model_config_kwargs) - value never reached fsdp_worker
+#          - Bug 2: flash_attn=true default was never overridden - model_wrapper still
+#            set attn_implementation="flash_attention_2" regardless of model_config_kwargs
+#          - Bug 3: use_sample_packing=true default asserts flash_attention_2 in model_wrapper
+#          - Also moved reasoning/tool parsers to engine_init_kwargs for correctness
+# v0.1.42: Install accelerate from source (HEAD) — NOT SUFFICIENT alone
+#          - transformers 5.2.0.dev0 adds _is_hf_initialized to Parameter kwargs
+#          - accelerate 1.12.0 passes **kwargs to Parameter.__new__() which rejects it
+#          - accelerate HEAD still has this bug (passes __dict__ as **kwargs blindly)
+# v0.1.43: Patch accelerate to filter _is_hf_initialized from Parameter kwargs
+#          - Both big_modeling.py and utils/modeling.py pass __dict__ to Parameter.__new__()
+#          - transformers 5.x sets _is_hf_initialized on Parameter objects (not just modules)
+#          - Patch filters out _is_hf_initialized before passing kwargs to constructor
+# v0.1.44: Fix FSDP2 set subscript error for GLM-4 _no_split_modules
+#          - GLM-4 model._no_split_modules returns a set, not a list
+#          - fsdp_utils.py:369 tried [0] subscript on a set → TypeError
+#          - Convert set to list before assertion check
+# v0.1.45: Fix FSDP2 state dict loading for non-DTensor entries
+#          - GLM-4 MoE has buffers/params not wrapped by fully_shard
+#          - fsdp2_load_full_state_dict assumed all state dict entries are DTensors
+#          - Skip DTensor-specific sharding for regular Tensor entries
+# v0.1.46: Fix pidfd_getfd permission error in vLLM weight sync
+#          - RunPod containers lack SYS_PTRACE capability
+#          - vLLM nightly v1 engine uses collective_rpc → pidfd_getfd for CUDA IPC
+#          - VLLM_USE_V1=0 falls back to v0 engine with direct weight updates
+#          - Also removed PYTORCH_ALLOC_CONF=expandable_segments (triggers pidfd)
+# v0.1.47: Fix MoE weight naming mismatch between HF and vLLM
+#          - HF packs experts as 3D tensors: experts.gate_up_proj [N, 2*I, H]
+#          - vLLM expects checkpoint format: experts.{i}.gate_proj.weight [I, H]
+#          - Added _unpack_moe_experts() to FSDPWeightExtractor to convert formats
+# v0.1.48: Fix MoE unpacking for CudaIpc grouped path
+#          - colocate_all=true + nccl selects CudaIpcTransferStrategy → group_by_module=True
+#          - MoE unpacking was only in the simple path, not yield_module_grouped_chunks
+#          - Moved _unpack_moe_experts to weight_extractor_utils.py for both paths
+# v0.1.49: Fix BatchEncoding compatibility with transformers 5.x
+#          - apply_chat_template(tokenize=True) returns BatchEncoding, not list
+#          - Added apply_chat_template_ids() wrapper to extract input_ids
+# v0.1.50: Fix OOM during backward pass
+#          - Re-add PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (was wrongly
+#            removed — pidfd was from vLLM v1, not expandable_segments)
+#          - B200 only (192 GiB vs H200's 141 GiB — needed for 48K context backward)
+# v0.1.51: Fix vLLM v1 + expandable_segments conflict
+#          - vLLM v0.16 is v1 engine by default, VLLM_USE_V1=0 no longer recognized
+#          - v1 engine rejects expandable_segments (conflicts with memory pool)
+#          - Move expandable_segments to FSDP worker init_model() (per-process)
+#          - Remove VLLM_USE_V1 env var (no longer needed/recognized)
+# v0.1.52: Enable FSDP CPU offload to fix OOM during backward pass
+#          - 48K context backward needs 44 GiB but only 22 GiB free on B200 (178 GiB)
+#          - cpu_offload=true offloads params+optimizer to pinned CPU memory (~45 GiB saved)
+#          - Params streamed to GPU layer-by-layer during fwd/bwd (slower but fits in memory)
+# v0.1.53: Use sleep_level=1 (CPU offload) instead of level 2 (discard weights)
+#          - Fixes vLLM bug where MoE weights aren't restored properly after wake from level 2
+#          - Level 1 keeps weights in CPU RAM, faster wake, avoids the Triton "cpu tensor" error
 
 name: fleet-task-grpo-glm-4.7-flash
 
@@ -95,26 +150,18 @@ resources:
   disk_size: 300
   ports: 6479
   any_of:
-    # B200 options
     - accelerators: B200:8
       cloud: lambda
       memory: 750+
     - accelerators: B200:8
       cloud: runpod
       memory: 750+
-    # H200 options (use H200-SXM for RunPod/Vast)
-    - accelerators: H200-SXM:8
-      cloud: runpod
-      memory: 750+
-    - accelerators: H200-SXM:8
-      cloud: vast
-      memory: 750+
 
 num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: main
+  ref: fix/glm-sleep-level
 
 envs:
   WANDB_API_KEY: ""
@@ -124,6 +171,7 @@ envs:
   # Use FLASHINFER attention backend for vLLM inference (bundled with vLLM)
   # flash_attn stub package provides bert_padding (pure Python) for SkyRL training
   VLLM_ATTENTION_BACKEND: "FLASHINFER"
+  # Note: VLLM_USE_V1 removed — no longer recognized by vLLM v0.16+ (v1 is default)
   ENV_KEYS: ""
   # Difficulty filter: 1=easy, 2=medium, 3=hard (comma-separated, e.g., "1,2" for easy+medium)
   DIFFICULTY: ""
@@ -137,6 +185,7 @@ envs:
   MAX_TASKS: ""
   AWS_ACCESS_KEY_ID: ""
   AWS_SECRET_ACCESS_KEY: ""
+  AWS_SESSION_TOKEN: ""
   AWS_REGION: "us-east-1"
   S3_DATASET_BUCKET: "fleet-internal-datasets"
   S3_CHECKPOINT_BUCKET: "skyrl-checkpoints"
@@ -189,8 +238,39 @@ setup: |
   # Script is in integrations/fleet/scripts/create_flash_attn_stub.py
   python3 integrations/fleet/scripts/create_flash_attn_stub.py
 
-  # Step 3: Install transformers from source for glm4_moe_lite architecture
-  uv pip install git+https://github.com/huggingface/transformers.git
+  # Step 3: Install transformers + accelerate from source
+  # transformers from source for glm4_moe_lite architecture
+  # accelerate from source for latest compat (still needs patch below)
+  uv pip install git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/accelerate.git
+
+  # Step 3.5: Patch accelerate for transformers 5.x compatibility
+  # transformers 5.x sets _is_hf_initialized on Parameter objects, but accelerate
+  # passes __dict__ as **kwargs to Parameter.__new__() which rejects unknown kwargs
+  python3 << 'PATCH_EOF'
+  import inspect
+  import accelerate.big_modeling as bm
+  import accelerate.utils.modeling as um
+  f = inspect.getfile(bm)
+  with open(f) as h:
+      s = h.read()
+  s = s.replace(
+      'kwargs = module._parameters[name].__dict__',
+      'kwargs = {k: v for k, v in module._parameters[name].__dict__.items() if k != "_is_hf_initialized"}'
+  )
+  with open(f, 'w') as h:
+      h.write(s)
+  print(f'Patched {f}')
+  f2 = inspect.getfile(um)
+  with open(f2) as h:
+      s = h.read()
+  s = s.replace(
+      'kwargs = module._parameters[tensor_name].__dict__',
+      'kwargs = {k: v for k, v in module._parameters[tensor_name].__dict__.items() if k != "_is_hf_initialized"}'
+  )
+  with open(f2, 'w') as h:
+      h.write(s)
+  print(f'Patched {f2}')
+  PATCH_EOF
 
   # Step 4: Install skyrl-gym from LOCAL path (NOT PyPI - different package!)
   uv pip install -e ../skyrl-gym
@@ -200,7 +280,7 @@ setup: |
 
   # Step 6: Install remaining core deps from pyproject.toml (--no-deps skipped these)
   # einops needed for flash_attn stub (bert_padding uses it)
-  uv pip install loguru tqdm ninja tensorboard func_timeout hydra-core==1.3.2 accelerate torchdata omegaconf ray==2.51.1 peft debugpy==1.8.0 hf_transfer datasets==4.0.0 tensordict jaxtyping polars s3fs fastapi uvicorn pybind11 setuptools pyarrow einops
+  uv pip install loguru tqdm ninja tensorboard func_timeout hydra-core==1.3.2 torchdata omegaconf ray==2.51.1 peft debugpy==1.8.0 hf_transfer datasets==4.0.0 tensordict jaxtyping polars s3fs fastapi uvicorn pybind11 setuptools pyarrow einops
 
   # Step 7: Install runtime deps
   uv pip install "litellm>=1.75.5" boto3 wandb awscli
@@ -252,7 +332,8 @@ run: |
   mkdir -p "$TMP_DIR"
   export TMPDIR="$TMP_DIR"
 
-  export PYTORCH_ALLOC_CONF=expandable_segments:True
+  # expandable_segments is set per-worker in fsdp_worker.py init_model()
+  # Cannot be set globally because vLLM v1's memory pool rejects it
 
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
@@ -270,7 +351,7 @@ run: |
   # Don't run 'ray stop' - it kills SkyPilot's Ray cluster that manages this job
   export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
   export RAY_object_store_memory=10000000000
-  ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
+  if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then echo "Ray already running on port 6479, reusing"; else ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000; fi
 
   for i in $(seq 1 24); do
     if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
@@ -296,7 +377,10 @@ run: |
     environment.skyrl_gym.fleet_task.tasks_file="$TASKS_FILE" \
     trainer.algorithm.advantage_estimator="grpo" \
     trainer.policy.model.path="zai-org/GLM-4.7-Flash" \
-    +trainer.policy.model.model_config_kwargs.attn_implementation=sdpa \
+    +trainer.policy.model_config_kwargs.attn_implementation=sdpa \
+    trainer.flash_attn=false \
+    trainer.use_sample_packing=false \
+    trainer.policy.fsdp_config.cpu_offload=true \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
@@ -335,8 +419,9 @@ run: |
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.7 \
-    +generator.reasoning_parser=glm45 \
-    +generator.tool_call_parser=glm47 \
+    generator.sleep_level=1 \
+    +generator.engine_init_kwargs.reasoning_parser=glm45 \
+    +generator.engine_init_kwargs.tool_call_parser=glm47 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_${MODALITY}_glm47flash_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \

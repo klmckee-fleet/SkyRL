@@ -1,6 +1,6 @@
 import pytest
 import torch
-from skyrl_train.weight_sync.weight_extractor_utils import yield_module_grouped_chunks
+from skyrl_train.weight_sync.weight_extractor_utils import yield_module_grouped_chunks, _unpack_moe_experts
 from skyrl_train.weight_sync import WeightChunk
 
 
@@ -226,3 +226,89 @@ class TestModuleGrouping:
         # Check total_numel
         expected_numel = 10 * 10 + 10
         assert chunk.total_numel == expected_numel
+
+
+class TestUnpackMoeExperts:
+    """Tests for _unpack_moe_experts MoE weight conversion."""
+
+    def test_gate_up_proj_unpacking(self):
+        """Test that gate_up_proj is split into per-expert gate_proj and up_proj."""
+        num_experts = 4
+        intermediate = 128
+        hidden = 64
+        tensor = torch.randn(num_experts, 2 * intermediate, hidden)
+
+        result = _unpack_moe_experts("model.layers.0.mlp.experts.gate_up_proj", tensor, torch.bfloat16)
+
+        assert result is not None
+        assert len(result) == num_experts * 2  # gate + up per expert
+        for i in range(num_experts):
+            gate_name, gate_t, gate_shape, gate_dtype = result[i * 2]
+            up_name, up_t, up_shape, up_dtype = result[i * 2 + 1]
+            assert gate_name == f"model.layers.0.mlp.experts.{i}.gate_proj.weight"
+            assert up_name == f"model.layers.0.mlp.experts.{i}.up_proj.weight"
+            assert gate_shape == [intermediate, hidden]
+            assert up_shape == [intermediate, hidden]
+            assert torch.equal(gate_t, tensor[i, :intermediate, :])
+            assert torch.equal(up_t, tensor[i, intermediate:, :])
+
+    def test_down_proj_unpacking(self):
+        """Test that down_proj is split into per-expert down_proj."""
+        num_experts = 4
+        hidden = 64
+        intermediate = 128
+        tensor = torch.randn(num_experts, hidden, intermediate)
+
+        result = _unpack_moe_experts("model.layers.0.mlp.experts.down_proj", tensor, torch.bfloat16)
+
+        assert result is not None
+        assert len(result) == num_experts
+        for i in range(num_experts):
+            name, t, shape, dtype_str = result[i]
+            assert name == f"model.layers.0.mlp.experts.{i}.down_proj.weight"
+            assert shape == [hidden, intermediate]
+            assert torch.equal(t, tensor[i])
+
+    def test_non_moe_param_returns_none(self):
+        """Test that non-MoE params return None."""
+        tensor = torch.randn(64, 64)
+        assert _unpack_moe_experts("model.layers.0.self_attn.q_proj.weight", tensor, torch.float32) is None
+        assert _unpack_moe_experts("model.layers.0.mlp.gate.weight", tensor, torch.float32) is None
+
+    def test_moe_unpacking_in_grouped_chunks(self):
+        """Test that MoE unpacking works inside yield_module_grouped_chunks."""
+        num_experts = 2
+        intermediate = 8
+        hidden = 4
+
+        params = {
+            "model.layers.0.mlp.experts.gate_up_proj": torch.randn(num_experts, 2 * intermediate, hidden),
+            "model.layers.0.mlp.experts.down_proj": torch.randn(num_experts, hidden, intermediate),
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(hidden, hidden),
+        }
+
+        chunks = list(
+            yield_module_grouped_chunks(
+                params=params,
+                dtype=torch.float32,
+                gather_tensor_fn=lambda p: p,
+                get_shape_fn=lambda n, p, t: list(t.shape),
+            )
+        )
+
+        # Collect all names from all chunks
+        all_names = []
+        for chunk in chunks:
+            all_names.extend(chunk.names)
+
+        # Should have per-expert names, not packed names
+        assert "model.layers.0.mlp.experts.gate_up_proj" not in all_names
+        assert "model.layers.0.mlp.experts.down_proj" not in all_names
+        assert "model.layers.0.mlp.experts.0.gate_proj.weight" in all_names
+        assert "model.layers.0.mlp.experts.0.up_proj.weight" in all_names
+        assert "model.layers.0.mlp.experts.1.gate_proj.weight" in all_names
+        assert "model.layers.0.mlp.experts.0.down_proj.weight" in all_names
+        assert "model.layers.0.mlp.experts.1.down_proj.weight" in all_names
+        assert "model.layers.0.self_attn.q_proj.weight" in all_names
+        # 2*2 (gate+up) + 2 (down) + 1 (q_proj) = 7
+        assert len(all_names) == 7

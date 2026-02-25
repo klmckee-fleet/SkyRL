@@ -264,6 +264,12 @@ generator:
   # Chat templating kwargs to pass to `tokenizer.apply_chat_template`
   chat_template_kwargs: {}
 
+  # Sleep level for colocated inference engines (when colocate_all=true):
+  # - Level 1: Offload weights to CPU RAM (faster wake, more RAM usage)
+  # - Level 2: Discard weights entirely (slower wake, reloads from disk)
+  # Level 1 is recommended for MoE models to avoid weight reload bugs
+  sleep_level: 2
+
   # Inference engine arguments. Arguments are passed directly to the vLLM or SGLang engine, so names must match
   # the engine's args. To specify an engine arg in the CLI override, use the format: +generator.engine_init_kwargs.arg_name=value
   engine_init_kwargs: {}

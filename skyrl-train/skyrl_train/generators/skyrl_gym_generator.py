@@ -26,6 +26,7 @@ from skyrl_train.generators.utils import (
     get_generation_prompt_ids,
     apply_overlong_filtering,
     get_rollout_metrics,
+    apply_chat_template_ids,
 )
 
 
@@ -147,10 +148,10 @@ class SkyRLGymGenerator(GeneratorInterface):
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "I am a user."},
         ]
-        self.base_conversation_token_ids = tokenizer.apply_chat_template(
+        self.base_conversation_token_ids = apply_chat_template_ids(
+            tokenizer,
             self.base_conversation,
             add_generation_prompt=False,
-            tokenize=True,
             **self.generator_cfg.chat_template_kwargs,
         )
         # We remove tokens after the last EOS token so that it can be captured in `observation_ids`.
@@ -272,10 +273,10 @@ class SkyRLGymGenerator(GeneratorInterface):
                 f"[env={env_key}] Environment init failed for session {session_id}: {e}. Returning zero-reward trajectory."
             )
             # Return a minimal failed trajectory with zero reward
-            prompt_ids = self.tokenizer.apply_chat_template(
+            prompt_ids = apply_chat_template_ids(
+                self.tokenizer,
                 chat_history,
                 add_generation_prompt=True,
-                tokenize=True,
                 **self.generator_cfg.chat_template_kwargs,
             )
             # Use token-level reward format [0.0] to match normal trajectories when custom_chat_template is None
@@ -295,13 +296,13 @@ class SkyRLGymGenerator(GeneratorInterface):
                 return StepWiseOutput(step_outputs=[init_fail_output])
             return init_fail_output
         initial_chat_history_length = len(chat_history)
-        initial_input_ids = self.tokenizer.apply_chat_template(
+        initial_input_ids = apply_chat_template_ids(
+            self.tokenizer,
             chat_history,
             # If retokenize_chat_history==True, avoid including the generation prompt in both the
             # prompt_ids and response_ids due to how `response_encodings["input_ids"]` works.
             add_generation_prompt=not retokenize_chat_history,
             chat_template=self.custom_chat_template if retokenize_chat_history else None,
-            tokenize=True,
             **self.generator_cfg.chat_template_kwargs,
         )
 
@@ -365,11 +366,11 @@ class SkyRLGymGenerator(GeneratorInterface):
                 # 1. Generate output
                 if is_step_wise or retokenize_chat_history:
                     # re-apply whole chat template so length check is correct
-                    agent_loop_state.input_ids = self.tokenizer.apply_chat_template(
+                    agent_loop_state.input_ids = apply_chat_template_ids(
+                        self.tokenizer,
                         chat_history,
                         chat_template=self.custom_chat_template if retokenize_chat_history else None,
                         add_generation_prompt=True,
-                        tokenize=True,
                         **self.generator_cfg.chat_template_kwargs,
                     )
                     agent_loop_state.loss_mask = []
@@ -672,10 +673,10 @@ class SkyRLGymGenerator(GeneratorInterface):
             if len(new_obs) > 0:
                 # For Qwen, this will generate `\n<|user|>Some observation<|im_end|>\n`. Note that the
                 # first `\n` is generated since we stripped it in ``base_conversation_token_ids``.
-                obs_ids_to_add = self.tokenizer.apply_chat_template(
+                obs_ids_to_add = apply_chat_template_ids(
+                    self.tokenizer,
                     [*self.base_conversation, *new_obs],
                     add_generation_prompt=not is_done,
-                    tokenize=True,
                     **self.generator_cfg.chat_template_kwargs,
                 )[len(self.base_conversation_token_ids) :]
             elif not is_done:
@@ -789,6 +790,11 @@ class SkyRLGymGenerator(GeneratorInterface):
             add_generation_prompt=True,
             tokenize=True,
         )
+        # transformers 5.x may return BatchEncoding instead of list
+        if hasattr(prompt_token_ids, "input_ids"):
+            prompt_token_ids = [list(ids) for ids in prompt_token_ids.input_ids]
+        elif not isinstance(prompt_token_ids[0], list):
+            prompt_token_ids = [list(prompt_token_ids)]
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 
         if self.generator_cfg.apply_overlong_filtering:

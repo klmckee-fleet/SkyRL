@@ -7,6 +7,44 @@ import torch
 from skyrl_train.weight_sync import WeightChunk
 
 
+def _unpack_moe_experts(name: str, tensor: torch.Tensor, dtype: torch.dtype) -> List[tuple]:
+    """Unpack HF-style packed MoE expert tensors into per-expert checkpoint format.
+
+    HF stores MoE experts as packed 3D tensors:
+      experts.gate_up_proj [num_experts, 2*intermediate, hidden]
+      experts.down_proj [num_experts, hidden, intermediate]
+    vLLM load_weights() expects per-expert checkpoint format:
+      experts.{i}.gate_proj.weight [intermediate, hidden]
+      experts.{i}.up_proj.weight [intermediate, hidden]
+      experts.{i}.down_proj.weight [hidden, intermediate]
+
+    Returns list of (name, tensor, shape, dtype_str) tuples, or None if not MoE.
+    """
+    if name.endswith(".experts.gate_up_proj"):
+        prefix = name.rsplit(".gate_up_proj", 1)[0]
+        num_experts = tensor.shape[0]
+        intermediate = tensor.shape[1] // 2
+        gate = tensor[:, :intermediate, :]
+        up = tensor[:, intermediate:, :]
+        results = []
+        for i in range(num_experts):
+            for proj_name, proj_tensor in [("gate_proj", gate[i]), ("up_proj", up[i])]:
+                t = proj_tensor.contiguous()
+                results.append((f"{prefix}.{i}.{proj_name}.weight", t, list(t.shape), str(dtype)))
+        return results
+
+    if name.endswith(".experts.down_proj"):
+        prefix = name.rsplit(".down_proj", 1)[0]
+        num_experts = tensor.shape[0]
+        results = []
+        for i in range(num_experts):
+            t = tensor[i].contiguous()
+            results.append((f"{prefix}.{i}.down_proj.weight", t, list(t.shape), str(dtype)))
+        return results
+
+    return None
+
+
 def yield_module_grouped_chunks(
     params: Dict[str, Any],
     dtype: torch.dtype,
@@ -67,6 +105,18 @@ def yield_module_grouped_chunks(
             param = params[param_name]
             tensor = gather_tensor_fn(param)
             tensor = tensor.to(dtype).detach().contiguous()
+
+            # Handle MoE packed expert tensors (HF format → checkpoint format)
+            moe_entries = _unpack_moe_experts(param_name, tensor, dtype)
+            if moe_entries is not None:
+                for entry_name, entry_tensor, entry_shape, entry_dtype in moe_entries:
+                    module_tensors.append(entry_tensor)
+                    module_names.append(entry_name)
+                    module_shapes.append(entry_shape)
+                    module_dtypes.append(entry_dtype)
+                    module_size += entry_tensor.nbytes
+                continue
+
             shape = get_shape_fn(param_name, param, tensor)
             module_tensors.append(tensor)
             module_names.append(param_name)

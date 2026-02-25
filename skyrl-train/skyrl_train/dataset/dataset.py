@@ -57,9 +57,15 @@ class PromptDataset:
         # filter out too long prompts
         tokenizer = self.tokenizer
         prompt_key = self.prompt_key
+
+        def _prompt_token_count(doc):
+            result = tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)
+            if hasattr(result, "input_ids"):
+                return len(result.input_ids)
+            return len(result)
+
         self.dataframe = self.dataframe.filter(
-            lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True))
-            <= self.max_prompt_length,
+            lambda doc: _prompt_token_count(doc) <= self.max_prompt_length,
             num_proc=self.num_workers,
             desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
         )

@@ -24,7 +24,7 @@ from skyrl_train.workers.worker import (
     RefWorkerBase,
 )
 from skyrl_train.weight_sync import WeightExtractor, WeightChunk, LoraLoadRequest
-from skyrl_train.weight_sync.weight_extractor_utils import yield_module_grouped_chunks
+from skyrl_train.weight_sync.weight_extractor_utils import yield_module_grouped_chunks, _unpack_moe_experts
 
 
 class FSDPWeightExtractor(WeightExtractor):
@@ -65,6 +65,18 @@ class FSDPWeightExtractor(WeightExtractor):
             # Simple path: yield one chunk per parameter
             for name, param in params.items():
                 tensor = self._gather_tensor(param).to(dtype).detach().contiguous()
+
+                # Handle MoE packed expert tensors (HF format → checkpoint format)
+                moe_entries = _unpack_moe_experts(name, tensor, dtype)
+                if moe_entries is not None:
+                    yield WeightChunk(
+                        names=[e[0] for e in moe_entries],
+                        dtypes=[e[3] for e in moe_entries],
+                        shapes=[e[2] for e in moe_entries],
+                        tensors=[e[1] for e in moe_entries],
+                    )
+                    continue
+
                 yield WeightChunk(
                     names=[name],
                     dtypes=[str(dtype)],
@@ -98,6 +110,14 @@ class FSDPPolicyWorkerBase(PolicyWorkerBase):
         self.strategy.backload_to_gpu(self.model, self.optimizer, non_blocking, backload_optimizer, backload_model)
 
     def init_model(self, model_path, num_training_steps: int = None):
+        # Set expandable_segments for FSDP training workers only (not globally)
+        # Reduces memory fragmentation during backward pass on large contexts
+        # Cannot be set globally because vLLM v1's memory pool rejects it
+        import os
+
+        alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+        if "expandable_segments" not in alloc_conf:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (alloc_conf + ",expandable_segments:True").lstrip(",")
         assert self.cfg.trainer.strategy in ("fsdp", "fsdp2")
         strategy = FSDPStrategy(
             fsdp_config=self.cfg.trainer.policy.fsdp_config,

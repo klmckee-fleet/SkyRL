@@ -17,6 +17,18 @@ from loguru import logger
 from skyrl_gym.metrics import aggregate_for_environment
 
 
+def apply_chat_template_ids(tokenizer, messages, **kwargs) -> List[int]:
+    """Wrapper around apply_chat_template that always returns a plain list of token IDs.
+
+    In transformers 5.x, apply_chat_template(..., tokenize=True) may return a
+    BatchEncoding instead of a plain list. This wrapper extracts input_ids.
+    """
+    result = tokenizer.apply_chat_template(messages, tokenize=True, **kwargs)
+    if hasattr(result, "input_ids"):
+        return list(result.input_ids)
+    return list(result)
+
+
 def _validate_template_file_path(file_path: str) -> str:
     """
     Validate and sanitize a template file path.
@@ -145,9 +157,9 @@ def get_generation_prompt_ids(tokenizer) -> List[int]:
     """
     Helper function to get the generation prompt ids for a given tokenizer.
     """
-    empty_user = tokenizer.apply_chat_template([{"role": "user", "content": ""}], tokenize=True)
-    empty_user_with_generation_prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}], add_generation_prompt=True, tokenize=True
+    empty_user = apply_chat_template_ids(tokenizer, [{"role": "user", "content": ""}])
+    empty_user_with_generation_prompt = apply_chat_template_ids(
+        tokenizer, [{"role": "user", "content": ""}], add_generation_prompt=True
     )
 
     generation_prompt_ids = empty_user_with_generation_prompt[len(empty_user) :]
@@ -429,17 +441,17 @@ def encode_messages_subset(messages: ConversationType, tokenizer):
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "I am a user."},
     ]
-    base_conversation_token_ids = tokenizer.apply_chat_template(
+    base_conversation_token_ids = apply_chat_template_ids(
+        tokenizer,
         base_conversation,
         add_generation_prompt=False,
-        tokenize=True,
     )
 
     full_conversation = base_conversation + messages
-    full_conversation_token_ids = tokenizer.apply_chat_template(
+    full_conversation_token_ids = apply_chat_template_ids(
+        tokenizer,
         full_conversation,
         add_generation_prompt=False,
-        tokenize=True,
     )
     conversation_token_ids = full_conversation_token_ids[len(base_conversation_token_ids) :]
     return conversation_token_ids
