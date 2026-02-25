@@ -18,6 +18,10 @@
 #         - reasoning_parser=qwen3, tool_call_parser=qwen3_coder (per HF model card)
 #         - SDPA attention + FSDP CPU offload + sleep_level=1 for MoE
 # v0.1.1: Add Vast cloud provider + H200:8 fallback for better GPU availability
+# v0.1.2: Add B200:4 and H200:4 fallbacks (8-GPU instances completely exhausted)
+#         - 35B params in fp16 ≈ 70GB, fits on single B200 (192GB) with KV cache
+#         - FSDP CPU offload keeps GPU memory low during training
+#         - Reduce batch sizes for 4-GPU config (detected via TOTAL_GPUS)
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -25,6 +29,7 @@ resources:
   disk_size: 500  # ~72GB model + optimizer + checkpoints + headroom
   ports: 6479
   any_of:
+    # Prefer B200:8 for fastest training
     - accelerators: B200:8
       cloud: lambda
       memory: 750+
@@ -34,7 +39,7 @@ resources:
     - accelerators: B200:8
       cloud: vast
       memory: 750+
-    # H200:8 fallback (141GB HBM3e per GPU)
+    # H200:8 fallback
     - accelerators: H200:8
       cloud: lambda
       memory: 750+
@@ -43,6 +48,39 @@ resources:
       memory: 750+
     - accelerators: H200:8
       cloud: vast
+      memory: 750+
+    # B200:4 fallback — MoE with 3B active params fits on 4 GPUs
+    # 35B fp16 ≈ 70GB per engine, B200 = 192GB leaves 122GB for KV cache
+    - accelerators: B200:4
+      cloud: lambda
+      memory: 750+
+    - accelerators: B200:4
+      cloud: runpod
+      memory: 750+
+    - accelerators: B200:4
+      cloud: vast
+      memory: 750+
+    - accelerators: B200:4
+      cloud: primeintellect
+      memory: 750+
+    - accelerators: B200:4
+      cloud: nebius
+      memory: 750+
+    # H200:4 fallback
+    - accelerators: H200:4
+      cloud: lambda
+      memory: 750+
+    - accelerators: H200:4
+      cloud: runpod
+      memory: 750+
+    - accelerators: H200:4
+      cloud: vast
+      memory: 750+
+    - accelerators: H200:4
+      cloud: primeintellect
+      memory: 750+
+    - accelerators: H200:4
+      cloud: nebius
       memory: 750+
 
 num_nodes: 1
