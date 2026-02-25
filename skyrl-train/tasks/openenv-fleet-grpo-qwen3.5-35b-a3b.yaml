@@ -1,0 +1,302 @@
+# Fleet Task GRPO Training via SkyPilot - Qwen3.5-35B-A3B
+# Usage: sky launch tasks/openenv-fleet-grpo-qwen3.5-35b-a3b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key>
+#
+# Qwen3.5-35B-A3B: Efficient hybrid MoE model for reasoning and tool use
+# - 35B total params, 3B active (MoE with 8/256 routed experts + 1 shared)
+# - Hybrid architecture: 30 Gated DeltaNet layers + 10 full attention layers
+# - 262K native context (no YaRN needed for 48K training window)
+# - Thinking mode with <think>...</think> tags
+# - vLLM nightly required
+#
+# Model: Qwen/Qwen3.5-35B-A3B (35B-A3B MoE)
+# GPUs: B200:8 (8 inference engines, TP=1)
+#
+# Based on GLM-4.7-Flash config (same MoE install pattern + framework fixes)
+#
+# v0.1.0: Initial Qwen3.5-35B-A3B config
+#         - Same install approach as GLM-4.7-Flash (vLLM nightly, flash_attn stub, etc.)
+#         - reasoning_parser=qwen3, tool_call_parser=qwen3_coder (per HF model card)
+#         - SDPA attention + FSDP CPU offload + sleep_level=1 for MoE
+
+name: fleet-task-grpo-qwen3.5-35b-a3b
+
+resources:
+  disk_size: 500  # ~72GB model + optimizer + checkpoints + headroom
+  ports: 6479
+  any_of:
+    - accelerators: B200:8
+      cloud: lambda
+      memory: 750+
+    - accelerators: B200:8
+      cloud: runpod
+      memory: 750+
+
+num_nodes: 1
+
+workdir:
+  url: https://github.com/fleet-ai/SkyRL.git
+  ref: feat/qwen3.5-35b
+
+envs:
+  WANDB_API_KEY: ""
+  FLEET_API_KEY: ""
+  LOGGER: "wandb"
+  INFERENCE_BACKEND: "vllm"
+  # Use FLASHINFER attention backend for vLLM inference (bundled with vLLM)
+  # flash_attn stub package provides bert_padding (pure Python) for SkyRL training
+  VLLM_ATTENTION_BACKEND: "FLASHINFER"
+  ENV_KEYS: ""
+  # Difficulty filter: 1=easy, 2=medium, 3=hard (comma-separated, e.g., "1,2" for easy+medium)
+  DIFFICULTY: ""
+  MODALITY: "tool_use"
+  MAX_TURNS: 50
+  # Qwen3.5-35B-A3B supports 262K context natively — no YaRN needed
+  MAX_INPUT_LENGTH: 48000
+  MAX_GENERATE_LENGTH: 8192
+  NUM_EPOCHS: 20
+  RUN_ID: ""
+  MAX_TASKS: ""
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  AWS_SESSION_TOKEN: ""
+  AWS_REGION: "us-east-1"
+  S3_DATASET_BUCKET: "fleet-internal-datasets"
+  S3_CHECKPOINT_BUCKET: "skyrl-checkpoints"
+  S3_TRAJECTORY_BUCKET: "skyrl-trajectories"
+  # Dataset version: "v3" (20,557 tasks) or "v4" (15,193 tasks, recommended)
+  DATA_VERSION: "v4"
+
+setup: |
+  set -euo pipefail
+  cd skyrl-train
+
+  echo "Validating environment variables..."
+  if [ -z "$FLEET_API_KEY" ]; then
+    echo "ERROR: FLEET_API_KEY is required"
+    exit 1
+  fi
+  if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+    echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required for S3 dataset download"
+    exit 1
+  fi
+  if [ "$MODALITY" != "tool_use" ] && [ "$MODALITY" != "computer_use" ]; then
+    echo "ERROR: MODALITY must be 'tool_use' or 'computer_use', got: $MODALITY"
+    exit 1
+  fi
+  echo "Environment validation passed"
+
+  uv venv --python 3.12 --seed
+  source .venv/bin/activate
+
+  # Qwen3.5-35B-A3B requires same install order as GLM-4.7-Flash:
+  # 1. vLLM nightly FIRST - brings PyTorch 2.10.0 (vLLM compiled against this version)
+  # 2. flash_attn stub package - minimal Python-only impl of bert_padding (pad_input/unpad_input)
+  # 3. transformers from source - for qwen3_5_moe architecture (overrides vLLM's 4.x pin)
+  # 4. skyrl-gym from local - PyPI has different package with same name
+  # 5. Other deps via pip (NOT uv sync - it enforces lockfile and downgrades PyTorch)
+  #
+  # Why not uv sync? The lockfile pins torch==2.9.0 but vLLM nightly needs torch==2.10.0
+  # Why --no-deps for main package? Prevents installing vllm/transformers from PyPI
+  # Why flash_attn stub? Real flash-attn has no prebuilt wheels for torch 2.10, RunPod lacks nvcc
+  #                      We only need bert_padding (pure Python), vLLM uses FLASHINFER for attention
+
+  # Step 1: Install vLLM nightly (required for Qwen3.5-35B-A3B support)
+  # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
+  uv pip install vllm --pre --index-url https://pypi.org/simple --extra-index-url https://wheels.vllm.ai/nightly
+
+  # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
+  # - bert_padding: pad_input/unpad_input (used by SkyRL training)
+  # - ops.triton.rotary: apply_rotary (used by vLLM internally for rotary embeddings)
+  # Pure PyTorch implementations - avoids all CUDA import issues
+  python3 integrations/fleet/scripts/create_flash_attn_stub.py
+
+  # Step 3: Install transformers + accelerate from source
+  # transformers from source for qwen3_5_moe architecture
+  # accelerate from source for latest compat (still needs patch below)
+  uv pip install git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/accelerate.git
+
+  # Step 3.5: Patch accelerate for transformers 5.x compatibility
+  # transformers 5.x sets _is_hf_initialized on Parameter objects, but accelerate
+  # passes __dict__ as **kwargs to Parameter.__new__() which rejects unknown kwargs
+  python3 << 'PATCH_EOF'
+  import inspect
+  import accelerate.big_modeling as bm
+  import accelerate.utils.modeling as um
+  f = inspect.getfile(bm)
+  with open(f) as h:
+      s = h.read()
+  s = s.replace(
+      'kwargs = module._parameters[name].__dict__',
+      'kwargs = {k: v for k, v in module._parameters[name].__dict__.items() if k != "_is_hf_initialized"}'
+  )
+  with open(f, 'w') as h:
+      h.write(s)
+  print(f'Patched {f}')
+  f2 = inspect.getfile(um)
+  with open(f2) as h:
+      s = h.read()
+  s = s.replace(
+      'kwargs = module._parameters[tensor_name].__dict__',
+      'kwargs = {k: v for k, v in module._parameters[tensor_name].__dict__.items() if k != "_is_hf_initialized"}'
+  )
+  with open(f2, 'w') as h:
+      h.write(s)
+  print(f'Patched {f2}')
+  PATCH_EOF
+
+  # Step 4: Install skyrl-gym from LOCAL path (NOT PyPI - different package!)
+  uv pip install -e ../skyrl-gym
+
+  # Step 5: Install main package without deps (deps installed separately to avoid version conflicts)
+  uv pip install -e . --no-deps
+
+  # Step 6: Install remaining core deps from pyproject.toml (--no-deps skipped these)
+  # einops needed for flash_attn stub (bert_padding uses it)
+  uv pip install loguru tqdm ninja tensorboard func_timeout hydra-core==1.3.2 torchdata omegaconf ray==2.51.1 peft debugpy==1.8.0 hf_transfer datasets==4.0.0 tensordict jaxtyping polars s3fs fastapi uvicorn pybind11 setuptools pyarrow einops
+
+  # Step 7: Install runtime deps
+  uv pip install "litellm>=1.75.5" boto3 wandb awscli
+  uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet_client" fleet-python
+
+  # Cleanup: Uninstall torchvision (vLLM installs it but text models don't need it)
+  uv pip uninstall torchvision || true
+
+  # Diagnostics: print versions and test imports
+  echo "=== DIAGNOSTIC: Package versions ==="
+  pip show torch | grep -E "^(Name|Version)"
+  pip show transformers | grep -E "^(Name|Version)"
+  pip show vllm | grep -E "^(Name|Version)"
+  python3 -c "import flash_attn; print(f'flash_attn stub: {flash_attn.__version__}')"
+  pip show skyrl-gym | grep -E "^(Name|Version|Location)"
+  echo "=== DIAGNOSTIC: Test imports ==="
+  python3 -c "import torch; print(f'torch: {torch.__version__}')"
+  python3 -c "import transformers; print(f'transformers: {transformers.__version__}')"
+  python3 -c "import vllm; print(f'vllm: {vllm.__version__}')"
+  python3 -c "from flash_attn.bert_padding import pad_input, unpad_input; print('flash_attn.bert_padding: OK')"
+  python3 -c "from flash_attn.ops.triton.rotary import apply_rotary; print('flash_attn.ops.triton.rotary: OK')"
+  python3 -c "import skyrl_gym; print(f'skyrl_gym loaded from: {skyrl_gym.__file__}')"
+  echo "=== DIAGNOSTIC: Test vLLM CUDA module ==="
+  python3 -c "import vllm._C; print('vllm._C imported successfully')"
+  echo "=== DIAGNOSTIC: FLASHINFER backend ==="
+  echo "VLLM_ATTENTION_BACKEND=$VLLM_ATTENTION_BACKEND"
+  echo "=== DIAGNOSTIC: Complete ==="
+
+  mkdir -p $HOME/data/fleet
+  TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
+  S3_PATH="s3://${S3_DATASET_BUCKET}/${DATA_VERSION}/openenv/all_${MODALITY}.json"
+  echo "Downloading dataset from $S3_PATH..."
+  aws s3 cp "$S3_PATH" "$TASKS_FILE"
+  TASK_COUNT=$(python3 -c "import json; print(len(json.load(open('$TASKS_FILE'))['tasks']))")
+  echo "Downloaded $TASK_COUNT tasks for modality: $MODALITY"
+
+  DATA_DIR="$HOME/data/fleet/${MODALITY}"
+  PREPARE_CMD="python -m integrations.fleet.prepare_dataset --tasks-json $TASKS_FILE --output-dir $DATA_DIR --modality $MODALITY"
+  [ -n "$ENV_KEYS" ] && PREPARE_CMD="$PREPARE_CMD --env-filter $ENV_KEYS"
+  [ -n "$DIFFICULTY" ] && PREPARE_CMD="$PREPARE_CMD --difficulty-filter $DIFFICULTY"
+  eval "$PREPARE_CMD"
+
+run: |
+  set -euo pipefail
+  cd skyrl-train
+  source .venv/bin/activate
+
+  TMP_DIR="$HOME/skyrl-tmp"
+  mkdir -p "$TMP_DIR"
+  export TMPDIR="$TMP_DIR"
+
+  # expandable_segments is set per-worker in fsdp_worker.py init_model()
+  # Cannot be set globally because vLLM v1's memory pool rejects it
+
+  TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
+  DATA_DIR="$HOME/data/fleet/${MODALITY}"
+
+  # Don't use 'uv run' - it re-syncs lockfile and downgrades PyTorch
+  python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
+
+  # Diagnostics: verify environment at run time
+  echo "=== RUN DIAGNOSTIC: Package versions ==="
+  python3 -c "import torch; print(f'torch: {torch.__version__}')"
+  python3 -c "import transformers; print(f'transformers: {transformers.__version__}')"
+  python3 -c "import vllm; print(f'vllm: {vllm.__version__}')"
+  python3 -c "import vllm._C; print('vllm._C imported successfully')"
+
+  # Don't run 'ray stop' - it kills SkyPilot's Ray cluster that manages this job
+  export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
+  export RAY_object_store_memory=10000000000
+  if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then echo "Ray already running on port 6479, reusing"; else ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000; fi
+
+  for i in $(seq 1 24); do
+    if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
+      break
+    fi
+    sleep 5
+  done
+
+  TOTAL_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
+
+  # Diagnostics: test vLLM import in Ray worker
+  echo "=== RUN DIAGNOSTIC: Testing vLLM import in Ray worker ==="
+  python3 -c "import ray; print(ray.get(ray.remote(lambda: __import__('vllm').__version__).remote()))"
+  echo "=== RUN DIAGNOSTIC: Ray worker vLLM import successful ==="
+
+  # Run GRPO training with Qwen3.5-35B-A3B
+  # MoE model: 35B total, 3B active - efficient training with thinking
+  # All deps installed in setup - use python directly (no --isolated)
+  python -m integrations.fleet.entrypoints.main_fleet \
+    data.train_data="['${DATA_DIR}/train.parquet']" \
+    data.val_data="['${DATA_DIR}/validation.parquet']" \
+    environment.env_class=fleet_task \
+    environment.skyrl_gym.fleet_task.tasks_file="$TASKS_FILE" \
+    trainer.algorithm.advantage_estimator="grpo" \
+    trainer.policy.model.path="Qwen/Qwen3.5-35B-A3B" \
+    +trainer.policy.model_config_kwargs.attn_implementation=sdpa \
+    trainer.flash_attn=false \
+    trainer.use_sample_packing=false \
+    trainer.policy.fsdp_config.cpu_offload=true \
+    trainer.placement.colocate_all=true \
+    trainer.strategy=fsdp2 \
+    trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
+    trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
+    generator.num_inference_engines=$TOTAL_GPUS \
+    generator.inference_engine_tensor_parallel_size=1 \
+    trainer.epochs=${NUM_EPOCHS} \
+    trainer.eval_batch_size=24 \
+    trainer.eval_before_train=true \
+    trainer.eval_interval=20 \
+    trainer.update_epochs_per_batch=1 \
+    trainer.train_batch_size=24 \
+    trainer.use_hybrid_env_sampling=true \
+    trainer.min_samples_per_env=1 \
+    trainer.policy_mini_batch_size=24 \
+    trainer.micro_forward_batch_size_per_gpu=1 \
+    trainer.micro_train_batch_size_per_gpu=1 \
+    trainer.ckpt_interval=10 \
+    trainer.max_ckpts_to_keep=2 \
+    trainer.max_prompt_length=512 \
+    generator.max_input_length=$MAX_INPUT_LENGTH \
+    generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
+    generator.sampling_params.temperature=0.9 \
+    generator.sampling_params.top_p=0.95 \
+    generator.sampling_params.stop='["</tool_call>"]' \
+    generator.eval_sampling_params.stop='["</tool_call>"]' \
+    trainer.policy.optimizer_config.lr=1.0e-6 \
+    trainer.algorithm.use_kl_loss=true \
+    generator.max_turns=$MAX_TURNS \
+    generator.backend=$INFERENCE_BACKEND \
+    generator.run_engines_locally=true \
+    generator.weight_sync_backend=nccl \
+    generator.async_engine=true \
+    generator.batched=false \
+    generator.use_conversation_multi_turn=true \
+    generator.n_samples_per_prompt=4 \
+    generator.eval_n_samples_per_prompt=3 \
+    generator.gpu_memory_utilization=0.65 \
+    generator.sleep_level=1 \
+    +generator.engine_init_kwargs.reasoning_parser=qwen3 \
+    +generator.engine_init_kwargs.tool_call_parser=qwen3_coder \
+    trainer.logger="$LOGGER" \
+    trainer.project_name="fleet-task-grpo" \
+    trainer.run_name="fleet_${MODALITY}_qwen35_35ba3b_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
+    trainer.resume_mode=latest \
+    trainer.ckpt_path="$HOME/ckpts/fleet_${MODALITY}_qwen35_35ba3b" \
+    trainer.dump_data_batch=true

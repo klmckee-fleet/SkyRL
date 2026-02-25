@@ -45,6 +45,7 @@ on:
         options:
           - openenv-fleet-grpo-qwen3-8b
           - openenv-fleet-grpo-qwen3-32b
+          - openenv-fleet-grpo-qwen3.5-35b-a3b
           - openenv-fleet-grpo-qwen3-8b-step-wise
           - openenv-fleet-grpo-qwen3-vl-8b
           - openenv-fleet-grpo-xlam-70b
