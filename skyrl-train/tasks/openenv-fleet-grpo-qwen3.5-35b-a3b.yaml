@@ -26,6 +26,13 @@
 #         - --pre with --index-url/--extra-index-url (not --pre alone)
 #         - RunPod has x86_64, nightly index only has latest builds
 #         - Match exact GLM-4.7-Flash install: --index-url pypi --extra-index-url nightly
+# v0.1.4: Fix vLLM install + transformers compat
+#         - Make nightly the PRIMARY index (--index-url nightly, --extra-index-url pypi)
+#           to prevent uv picking stable 0.15.1 from PyPI (no Qwen3.5 support)
+#         - Patch transformers modeling_rope_utils.py: list|set TypeError
+#           vLLM Qwen3.5 config sets _ignore_keys_at_rope_validation as list,
+#           but transformers 5.x does `list | {"partial_rotary_factor"}` which fails
+#         - Add language_model_only=true (text-only, skip vision encoder per vLLM recipe)
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -157,10 +164,11 @@ setup: |
   #                      We only need bert_padding (pure Python), vLLM uses FLASHINFER for attention
 
   # Step 1: Install vLLM nightly (required for Qwen3.5-35B-A3B support)
-  # Use --index-strategy unsafe-best-match so uv checks BOTH indexes for x86_64 wheels
-  # Without this, uv locks to whichever index has the package first — nightly may only have aarch64
+  # Nightly MUST be the primary index (--index-url) to avoid uv picking stable v0.15.1 from PyPI
+  # which lacks Qwen3.5 architecture support. PyPI is --extra-index-url for dependencies only.
+  # --index-strategy unsafe-best-match: if nightly lacks x86_64 wheel, fall back to PyPI
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  uv pip install vllm --pre --index-url https://pypi.org/simple --extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match
+  uv pip install vllm --pre --index-url https://wheels.vllm.ai/nightly --extra-index-url https://pypi.org/simple --index-strategy unsafe-best-match
 
   # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
   # - bert_padding: pad_input/unpad_input (used by SkyRL training)
@@ -200,6 +208,27 @@ setup: |
   with open(f2, 'w') as h:
       h.write(s)
   print(f'Patched {f2}')
+  PATCH_EOF
+
+  # Step 3.6: Patch transformers rope utils for vLLM Qwen3.5 compat
+  # vLLM's Qwen3_5MoeTextConfig sets _ignore_keys_at_rope_validation as a list,
+  # but transformers 5.x does `list | {"partial_rotary_factor"}` which fails with TypeError
+  # Fix: cast to set() before the | operator
+  python3 << 'PATCH_EOF'
+  import transformers.modeling_rope_utils as ru
+  import inspect
+  f = inspect.getfile(ru)
+  with open(f) as h:
+      s = h.read()
+  old = 'ignore_keys_at_rope_validation | {"partial_rotary_factor"}'
+  new = 'set(ignore_keys_at_rope_validation) | {"partial_rotary_factor"}'
+  if old in s:
+      s = s.replace(old, new)
+      with open(f, 'w') as h:
+          h.write(s)
+      print(f'Patched {f}: fixed list|set TypeError')
+  else:
+      print(f'Patch target not found in {f} - may already be fixed')
   PATCH_EOF
 
   # Step 4: Install skyrl-gym from LOCAL path (NOT PyPI - different package!)
@@ -352,6 +381,7 @@ run: |
     generator.sleep_level=1 \
     +generator.engine_init_kwargs.reasoning_parser=qwen3 \
     +generator.engine_init_kwargs.tool_call_parser=qwen3_coder \
+    +generator.engine_init_kwargs.language_model_only=true \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_${MODALITY}_qwen35_35ba3b_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
