@@ -52,6 +52,12 @@
 #         - Add A100:8 fallback for GPU scarcity (B200/H200 exhausted across all providers)
 #         - Dynamic TP: A100 80GB uses TP=2 (35B model needs ~70GB, won't fit at TP=1)
 #           B200/H200 use TP=1 (141-192GB VRAM per GPU)
+# v0.1.8: Fix weight sync VLM→CausalLM name mismatch
+#         - vLLM loads as Qwen3_5MoeForConditionalGeneration (VLM) → weights at
+#           language_model.model.layers.X but FSDP sends model.layers.X → ValueError
+#         - Fix: Override vLLM architecture to Qwen3_5MoeForCausalLM via hf_overrides
+#           Both FSDP and vLLM now use model.layers.X naming (no language_model. prefix)
+#         - Remove language_model_only=true (not needed with CausalLM class)
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -425,7 +431,7 @@ run: |
     generator.sleep_level=1 \
     +generator.engine_init_kwargs.reasoning_parser=qwen3 \
     +generator.engine_init_kwargs.tool_call_parser=qwen3_coder \
-    +generator.engine_init_kwargs.language_model_only=true \
+    '+generator.engine_init_kwargs.hf_overrides={architectures:[Qwen3_5MoeForCausalLM]}' \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_${MODALITY}_qwen35_35ba3b_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
