@@ -140,6 +140,9 @@
 #          - 48K context backward needs 44 GiB but only 22 GiB free on B200 (178 GiB)
 #          - cpu_offload=true offloads params+optimizer to pinned CPU memory (~45 GiB saved)
 #          - Params streamed to GPU layer-by-layer during fwd/bwd (slower but fits in memory)
+# v0.1.53: Use sleep_level=1 (CPU offload) instead of level 2 (discard weights)
+#          - Fixes vLLM bug where MoE weights aren't restored properly after wake from level 2
+#          - Level 1 keeps weights in CPU RAM, faster wake, avoids the Triton "cpu tensor" error
 
 name: fleet-task-grpo-glm-4.7-flash
 
@@ -158,7 +161,7 @@ num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: fix/glm-flash-sdpa-attention
+  ref: fix/glm-sleep-level
 
 envs:
   WANDB_API_KEY: ""
@@ -416,6 +419,7 @@ run: |
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.7 \
+    generator.sleep_level=1 \
     +generator.engine_init_kwargs.reasoning_parser=glm45 \
     +generator.engine_init_kwargs.tool_call_parser=glm47 \
     trainer.logger="$LOGGER" \
