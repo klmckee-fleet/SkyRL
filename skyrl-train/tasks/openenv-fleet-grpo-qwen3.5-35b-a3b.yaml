@@ -37,6 +37,14 @@
 #         - Remove --index-strategy unsafe-best-match (prefers stable over nightly)
 #           Use default first-index strategy with nightly as --index-url
 #         - Keep torchvision: qwen3_5 -> qwen3_vl -> qwen2_vl -> needs torchvision at import
+# v0.1.6: Fix vLLM nightly install — use pip instead of uv pip
+#         - Root cause: nightly wheels have local version identifiers (+gXXXXXX)
+#           e.g., vllm-0.16.0rc2.dev472+gee59a7c61-cp38-abi3-manylinux_2_31_x86_64.whl
+#         - uv does NOT support local version identifiers in dependency resolution
+#           (https://docs.astral.sh/uv/pip/compatibility/#local-version-identifiers)
+#         - uv silently ignores nightly wheels and falls back to PyPI stable (0.15.1)
+#         - pip handles local versions correctly and installs the nightly
+#         - Added version assertion to fail fast if nightly not installed
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -168,11 +176,13 @@ setup: |
   #                      We only need bert_padding (pure Python), vLLM uses FLASHINFER for attention
 
   # Step 1: Install vLLM nightly (required for Qwen3.5-35B-A3B support)
-  # Nightly MUST be the primary index (--index-url) with default first-index strategy
-  # so uv ALWAYS picks from nightly first. PyPI is --extra-index-url for deps (torch, etc.)
-  # DO NOT use --index-strategy unsafe-best-match: it prefers stable 0.15.1 from PyPI over nightly
+  # MUST use pip (not uv pip) because nightly wheels have local version identifiers
+  # (e.g., +gee59a7c61) which uv's resolver silently ignores, falling back to PyPI stable.
+  # pip handles local versions correctly and installs the nightly.
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  uv pip install vllm --pre --index-url https://wheels.vllm.ai/nightly --extra-index-url https://pypi.org/simple
+  pip install vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
+  # Verify we got the nightly (must be 0.16+, stable 0.15.x lacks Qwen3.5 support)
+  python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert '0.16' in v or '0.17' in v, f'ERROR: Got vLLM {v}, need nightly 0.16+ for Qwen3.5 support'"
 
   # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
   # - bert_padding: pad_input/unpad_input (used by SkyRL training)
