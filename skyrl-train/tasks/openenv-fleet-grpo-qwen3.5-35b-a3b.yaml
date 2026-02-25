@@ -17,6 +17,7 @@
 #         - Same install approach as GLM-4.7-Flash (vLLM nightly, flash_attn stub, etc.)
 #         - reasoning_parser=qwen3, tool_call_parser=qwen3_coder (per HF model card)
 #         - SDPA attention + FSDP CPU offload + sleep_level=1 for MoE
+# v0.1.1: Add Vast cloud provider + H200:8 fallback for better GPU availability
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -29,6 +30,19 @@ resources:
       memory: 750+
     - accelerators: B200:8
       cloud: runpod
+      memory: 750+
+    - accelerators: B200:8
+      cloud: vast
+      memory: 750+
+    # H200:8 fallback (141GB HBM3e per GPU)
+    - accelerators: H200:8
+      cloud: lambda
+      memory: 750+
+    - accelerators: H200:8
+      cloud: runpod
+      memory: 750+
+    - accelerators: H200:8
+      cloud: vast
       memory: 750+
 
 num_nodes: 1
