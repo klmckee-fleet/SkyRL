@@ -33,6 +33,10 @@
 #           vLLM Qwen3.5 config sets _ignore_keys_at_rope_validation as list,
 #           but transformers 5.x does `list | {"partial_rotary_factor"}` which fails
 #         - Add language_model_only=true (text-only, skip vision encoder per vLLM recipe)
+# v0.1.5: Fix vLLM install index strategy + keep torchvision
+#         - Remove --index-strategy unsafe-best-match (prefers stable over nightly)
+#           Use default first-index strategy with nightly as --index-url
+#         - Keep torchvision: qwen3_5 -> qwen3_vl -> qwen2_vl -> needs torchvision at import
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -164,11 +168,11 @@ setup: |
   #                      We only need bert_padding (pure Python), vLLM uses FLASHINFER for attention
 
   # Step 1: Install vLLM nightly (required for Qwen3.5-35B-A3B support)
-  # Nightly MUST be the primary index (--index-url) to avoid uv picking stable v0.15.1 from PyPI
-  # which lacks Qwen3.5 architecture support. PyPI is --extra-index-url for dependencies only.
-  # --index-strategy unsafe-best-match: if nightly lacks x86_64 wheel, fall back to PyPI
+  # Nightly MUST be the primary index (--index-url) with default first-index strategy
+  # so uv ALWAYS picks from nightly first. PyPI is --extra-index-url for deps (torch, etc.)
+  # DO NOT use --index-strategy unsafe-best-match: it prefers stable 0.15.1 from PyPI over nightly
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  uv pip install vllm --pre --index-url https://wheels.vllm.ai/nightly --extra-index-url https://pypi.org/simple --index-strategy unsafe-best-match
+  uv pip install vllm --pre --index-url https://wheels.vllm.ai/nightly --extra-index-url https://pypi.org/simple
 
   # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
   # - bert_padding: pad_input/unpad_input (used by SkyRL training)
@@ -245,8 +249,8 @@ setup: |
   uv pip install "litellm>=1.75.5" boto3 wandb awscli
   uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet_client" fleet-python
 
-  # Cleanup: Uninstall torchvision (vLLM installs it but text models don't need it)
-  uv pip uninstall torchvision || true
+  # Note: Do NOT uninstall torchvision — Qwen3.5 model module imports qwen3_vl -> qwen2_5_vl
+  # -> qwen2_vl -> transformers video_processing_qwen2_vl which needs torchvision at import time
 
   # Diagnostics: print versions and test imports
   echo "=== DIAGNOSTIC: Package versions ==="
