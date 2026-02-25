@@ -139,6 +139,16 @@ class WorkerWrap:
         for name, tensor in self._weight_receiver.receive_weights(request):
             weight_list.append((name, tensor))
 
+        # Handle CausalLM → VLM weight name mismatch.
+        # When FSDP loads AutoModelForCausalLM, weights have "model.layers.X" names.
+        # But vLLM may load the VLM variant (e.g. ForConditionalGeneration) which wraps
+        # the language model under "language_model.", expecting "language_model.model.layers.X".
+        # Detect this by checking if the vLLM model has a language_model attribute and
+        # the incoming weights don't already have the prefix.
+        model = self.model_runner.model
+        if hasattr(model, "language_model") and weight_list and not weight_list[0][0].startswith("language_model."):
+            weight_list = [(f"language_model.{name}", tensor) for name, tensor in weight_list]
+
         self.model_runner.model.load_weights(weights=weight_list)
 
         for weight in weight_list:
