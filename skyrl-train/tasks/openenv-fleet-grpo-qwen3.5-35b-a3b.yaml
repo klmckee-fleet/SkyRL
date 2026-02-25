@@ -45,6 +45,13 @@
 #         - uv silently ignores nightly wheels and falls back to PyPI stable (0.15.1)
 #         - pip handles local versions correctly and installs the nightly
 #         - Added version assertion to fail fast if nightly not installed
+# v0.1.7: Fix FSDP2 wrapping + add A100:8 fallback
+#         - Move get_fsdp_wrap_policy into FSDP1 branch only (fsdp_strategy.py)
+#           Qwen3.5 _no_split_modules includes Qwen3_5MoeVisionBlock which doesn't
+#           exist in CausalLM variant, causing "transformer layer class not found"
+#         - Add A100:8 fallback for GPU scarcity (B200/H200 exhausted across all providers)
+#         - Dynamic TP: A100 80GB uses TP=2 (35B model needs ~70GB, won't fit at TP=1)
+#           B200/H200 use TP=1 (141-192GB VRAM per GPU)
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -105,6 +112,14 @@ resources:
     - accelerators: H200:4
       cloud: nebius
       memory: 750+
+    # A100:8 fallback — 80GB VRAM per GPU, use TP=2 for 35B model
+    # Model is ~70GB bf16, too large for single A100. TP=2 shards to ~35GB each.
+    - accelerators: A100-80GB:8
+      cloud: lambda
+    - accelerators: A100-80GB:8
+      cloud: runpod
+    - accelerators: A100-80GB:8
+      cloud: vast
 
 num_nodes: 1
 
@@ -335,6 +350,21 @@ run: |
 
   TOTAL_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
 
+  # Dynamic TP based on GPU memory:
+  # - B200 (192GB) / H200 (141GB): TP=1, one engine per GPU
+  # - A100 (80GB): TP=2, model sharded across 2 GPUs per engine
+  GPU_MEM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+  echo "GPU memory: ${GPU_MEM_MB} MiB"
+  if [ "$GPU_MEM_MB" -lt 100000 ]; then
+    TP=2
+    NUM_ENGINES=$((TOTAL_GPUS / TP))
+    echo "A100 detected (${GPU_MEM_MB} MiB) — using TP=$TP, $NUM_ENGINES inference engines"
+  else
+    TP=1
+    NUM_ENGINES=$TOTAL_GPUS
+    echo "B200/H200 detected (${GPU_MEM_MB} MiB) — using TP=$TP, $NUM_ENGINES inference engines"
+  fi
+
   # Diagnostics: test vLLM import in Ray worker
   echo "=== RUN DIAGNOSTIC: Testing vLLM import in Ray worker ==="
   python3 -c "import ray; print(ray.get(ray.remote(lambda: __import__('vllm').__version__).remote()))"
@@ -358,8 +388,8 @@ run: |
     trainer.strategy=fsdp2 \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
     trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
-    generator.num_inference_engines=$TOTAL_GPUS \
-    generator.inference_engine_tensor_parallel_size=1 \
+    generator.num_inference_engines=$NUM_ENGINES \
+    generator.inference_engine_tensor_parallel_size=$TP \
     trainer.epochs=${NUM_EPOCHS} \
     trainer.eval_batch_size=24 \
     trainer.eval_before_train=true \
