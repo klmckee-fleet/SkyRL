@@ -206,13 +206,6 @@ class FSDPStrategy(DistributedStrategy):
         return ret[0] if len(ret) == 1 else ret
 
     def _fsdp_init_model(self, model, is_train=True, is_wrapped=False):
-        # Initialize FSDP wrapping policy
-        wrap_policy = get_fsdp_wrap_policy(
-            module=model.model if is_wrapped else model,
-            config=self.fsdp_config.get("wrap_policy", None),
-            is_lora=self.is_lora,
-        )
-
         # Setup mixed precision
         mixed_precision_config = self.fsdp_config.get("mixed_precision", None)
         if mixed_precision_config is not None:
@@ -234,6 +227,12 @@ class FSDPStrategy(DistributedStrategy):
 
         # Wrap model with FSDP
         if self.fsdp_strategy == "fsdp":
+            # Initialize FSDP1 wrapping policy (only needed for FSDP1, FSDP2 has its own logic)
+            wrap_policy = get_fsdp_wrap_policy(
+                module=model.model if is_wrapped else model,
+                config=self.fsdp_config.get("wrap_policy", None),
+                is_lora=self.is_lora,
+            )
             # cpu offloading will always be none for models that train with FSDP due to correctness issues with gradient accumulation -
             # see https://docs.pytorch.org/docs/stable/fsdp.html
             if not is_train and self.fsdp_config.get("cpu_offload", False):
