@@ -68,6 +68,15 @@
 #         - Remove A100 (too small for 35B MoE) and PrimeIntellect (not enabled)
 #         - Add H100:8 (80GB/GPU, uses TP=2) and H200/B200 on Nebius
 #         - Add H100 to dynamic TP detection
+# v0.1.12: Fix vLLM version resolution — pip preferred stable 0.16.0 over nightly
+#         - Root cause: stable vLLM 0.16.0 (released Feb 26, branch-cut Feb 8) doesn't
+#           have Qwen3.5 support (PR merged Feb 9, one day after branch cut)
+#         - pip considers 0.16.0 > 0.16.0rc2.dev496, so always prefers stable
+#         - Fix: "vllm<0.16.0" constraint + --pre + nightly extra-index
+#           ensures nightly 0.16.0rc2.devXXX wins over PyPI's 0.15.1, while
+#           excluding the broken stable 0.16.0
+#         - Previous approaches failed: direct wheel URL (404), pinned commit
+#           index (pip still preferred stable), nightly-only index (missing deps)
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -206,13 +215,13 @@ setup: |
   # (e.g., +gee59a7c61) which uv's resolver silently ignores, falling back to PyPI stable.
   # pip handles local versions correctly and installs the nightly.
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  # Pin to specific vLLM nightly commit that has Qwen3_5Moe support.
-  # Latest nightly (dev490) removed Qwen3_5MoeForConditionalGeneration from model registry.
-  # Commit ed42507f6d (dev483) is the last known working version.
-  # Install directly by URL to bypass pip version resolution (--extra-index-url still lets pip prefer newer versions).
-  pip install --no-cache-dir "https://wheels.vllm.ai/ed42507f6d6e326663997da5cca6991da5d8a23f/vllm-0.16.0rc2.dev483+ged42507f6-cp38-abi3-manylinux_2_31_x86_64.whl"
-  # Verify we got the pinned nightly
-  python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert '0.16' in v or '0.17' in v, f'ERROR: Got vLLM {v}, need nightly 0.16+ for Qwen3.5 support'"
+  # Constraint: "vllm<0.16.0" excludes stable 0.16.0 (branch-cut Feb 8, no Qwen3.5)
+  # while allowing nightly 0.16.0rc2.devXXX (Qwen3.5 PR merged Feb 9).
+  # --pre allows pre-release, nightly extra-index provides the nightly wheel.
+  # pip picks highest matching: nightly 0.16.0rc2.devXXX > PyPI 0.15.1, both < 0.16.0.
+  pip install --no-cache-dir "vllm<0.16.0" --pre --extra-index-url https://wheels.vllm.ai/nightly
+  # Verify we got a nightly build (not stable 0.15.x)
+  python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert 'rc' in v or 'dev' in v, f'ERROR: Got stable vLLM {v}, need nightly for Qwen3.5 support'"
 
   # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
   # - bert_padding: pad_input/unpad_input (used by SkyRL training)
