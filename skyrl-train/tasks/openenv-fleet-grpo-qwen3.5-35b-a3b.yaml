@@ -82,6 +82,12 @@
 #           for trtllm_paged_attention_context, but cloud GPU instances lack CUDA toolkit
 #         - Switch to FLASH_ATTN backend (uses precompiled vllm._C kernels, no nvcc needed)
 #         - Only affects 10/40 standard attention layers (DeltaNet layers use own mechanism)
+# v0.1.14: Simplify vLLM install — single pip command with !=0.16.0 constraint
+#         - Previous download+install approach failed when nightly index was temporarily
+#           unavailable (find-links returned empty)
+#         - Now: pip install "vllm!=0.16.0" --pre with nightly + PyTorch nightly indexes
+#         - !=0.16.0 excludes broken stable, --pre allows nightly, pip picks highest match
+#         - PyTorch nightly index added for torch dep resolution
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -220,15 +226,11 @@ setup: |
   # Step 1: Install vLLM nightly (required for Qwen3.5-35B-A3B support)
   # MUST use pip (not uv pip) because nightly wheels have local version identifiers
   # (e.g., +gee59a7c61) which uv's resolver silently ignores, falling back to PyPI stable.
-  # Two-step install to avoid pip preferring stable 0.16.0 (no Qwen3.5) over nightly:
-  #   1. Download nightly wheel from nightly-only index (--no-index + --find-links)
-  #   2. Install from local wheel with deps from PyPI + PyTorch nightly
-  # This bypasses pip's version resolution which otherwise picks 0.16.0 > 0.16.0rc2.devXXX.
-  mkdir -p /tmp/vllm-whl
-  pip download --no-cache-dir --no-deps vllm --pre -d /tmp/vllm-whl --no-index --find-links https://wheels.vllm.ai/nightly/vllm/ || pip download --no-cache-dir --no-deps vllm --pre -d /tmp/vllm-whl --index-url https://wheels.vllm.ai/nightly
-  VLLM_WHL=$(ls /tmp/vllm-whl/vllm-*.whl | head -1)
-  echo "Downloaded vLLM nightly: $VLLM_WHL"
-  pip install --no-cache-dir "$VLLM_WHL" --extra-index-url https://download.pytorch.org/whl/nightly/cu129
+  # Constraint: "vllm!=0.16.0" excludes stable 0.16.0 (branch-cut Feb 8, no Qwen3.5 —
+  # PR merged Feb 9). With --pre, pip picks nightly 0.16.Xrc1.devN > PyPI 0.15.1.
+  # Future stable releases (0.16.1+) WILL have Qwen3.5 since the PR is in main.
+  # PyTorch nightly extra-index needed because nightly vLLM may require torch 2.10.x+.
+  pip install --no-cache-dir "vllm!=0.16.0" --pre --extra-index-url https://wheels.vllm.ai/nightly --extra-index-url https://download.pytorch.org/whl/nightly/cu129
   # Verify we got a nightly build (not stable 0.15.x or 0.16.0)
   python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert 'rc' in v or 'dev' in v, f'ERROR: Got stable vLLM {v}, need nightly for Qwen3.5 support'"
 
