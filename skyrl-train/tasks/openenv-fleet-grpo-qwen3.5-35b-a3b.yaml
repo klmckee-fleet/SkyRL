@@ -206,10 +206,12 @@ setup: |
   # (e.g., +gee59a7c61) which uv's resolver silently ignores, falling back to PyPI stable.
   # pip handles local versions correctly and installs the nightly.
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  # Use --index-url (primary) for nightly, --extra-index-url (secondary) for PyPI deps.
-  # Without this, pip prefers PyPI's stable 0.15.x over nightly 0.16 pre-release.
-  pip install vllm --pre --no-cache-dir --index-url https://wheels.vllm.ai/nightly --extra-index-url https://pypi.org/simple
-  # Verify we got the nightly (must be 0.16+, stable 0.15.x lacks Qwen3.5 support)
+  # Pin to specific vLLM nightly commit that has Qwen3_5Moe support.
+  # Latest nightly (dev490) removed Qwen3_5MoeForConditionalGeneration from model registry.
+  # Commit ed42507f6d (dev483) is the last known working version.
+  VLLM_COMMIT=ed42507f6d6e326663997da5cca6991da5d8a23f
+  pip install vllm --pre --no-cache-dir --extra-index-url https://wheels.vllm.ai/${VLLM_COMMIT}
+  # Verify we got the pinned nightly
   python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert '0.16' in v or '0.17' in v, f'ERROR: Got vLLM {v}, need nightly 0.16+ for Qwen3.5 support'"
 
   # Step 2: Create flash_attn stub package (pure Python, no CUDA build)
