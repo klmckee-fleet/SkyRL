@@ -206,7 +206,9 @@ setup: |
   # (e.g., +gee59a7c61) which uv's resolver silently ignores, falling back to PyPI stable.
   # pip handles local versions correctly and installs the nightly.
   # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
-  pip install vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
+  # Use --index-url (primary) for nightly, --extra-index-url (secondary) for PyPI deps.
+  # Without this, pip prefers PyPI's stable 0.15.x over nightly 0.16 pre-release.
+  pip install vllm --pre --no-cache-dir --index-url https://wheels.vllm.ai/nightly --extra-index-url https://pypi.org/simple
   # Verify we got the nightly (must be 0.16+, stable 0.15.x lacks Qwen3.5 support)
   python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert '0.16' in v or '0.17' in v, f'ERROR: Got vLLM {v}, need nightly 0.16+ for Qwen3.5 support'"
 
