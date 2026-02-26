@@ -209,8 +209,8 @@ setup: |
   # Pin to specific vLLM nightly commit that has Qwen3_5Moe support.
   # Latest nightly (dev490) removed Qwen3_5MoeForConditionalGeneration from model registry.
   # Commit ed42507f6d (dev483) is the last known working version.
-  VLLM_COMMIT=ed42507f6d6e326663997da5cca6991da5d8a23f
-  pip install vllm --pre --no-cache-dir --extra-index-url https://wheels.vllm.ai/${VLLM_COMMIT}
+  # Install directly by URL to bypass pip version resolution (--extra-index-url still lets pip prefer newer versions).
+  pip install --no-cache-dir "https://wheels.vllm.ai/ed42507f6d6e326663997da5cca6991da5d8a23f/vllm-0.16.0rc2.dev483+ged42507f6-cp38-abi3-manylinux_2_31_x86_64.whl"
   # Verify we got the pinned nightly
   python3 -c "import vllm; v=vllm.__version__; print(f'vLLM version: {v}'); assert '0.16' in v or '0.17' in v, f'ERROR: Got vLLM {v}, need nightly 0.16+ for Qwen3.5 support'"
 
