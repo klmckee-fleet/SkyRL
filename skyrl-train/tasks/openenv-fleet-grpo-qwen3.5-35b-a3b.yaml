@@ -88,6 +88,8 @@
 #         - Now: pip install "vllm!=0.16.0" --pre with nightly + PyTorch nightly indexes
 #         - !=0.16.0 excludes broken stable, --pre allows nightly, pip picks highest match
 #         - PyTorch nightly index added for torch dep resolution
+# v0.1.15: Re-add PrimeIntellect provider (cheapest H200:4 at ~$8/hr)
+#         - Was removed in v0.1.11 but DataCrunch wallet is now funded
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -116,6 +118,9 @@ resources:
       cloud: vast
       memory: 750+
     - accelerators: H200:8
+      cloud: primeintellect
+      memory: 750+
+    - accelerators: H200:8
       cloud: nebius
       memory: 750+
     # H100:8 fallback (80GB/GPU, TP=2 — 35B shards to ~35GB each)
@@ -136,6 +141,9 @@ resources:
       cloud: vast
       memory: 750+
     - accelerators: B200:4
+      cloud: primeintellect
+      memory: 750+
+    - accelerators: B200:4
       cloud: nebius
       memory: 750+
     # H200:4 fallback
@@ -147,6 +155,9 @@ resources:
       memory: 750+
     - accelerators: H200:4
       cloud: vast
+      memory: 750+
+    - accelerators: H200:4
+      cloud: primeintellect
       memory: 750+
     - accelerators: H200:4
       cloud: nebius
