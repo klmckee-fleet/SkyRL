@@ -120,6 +120,9 @@ resources:
       cloud: vast
       memory: 750+
     - accelerators: H200:8
+      cloud: primeintellect
+      memory: 750+
+    - accelerators: H200:8
       cloud: nebius
       memory: 750+
     # H100:8 fallback (80GB/GPU, TP=2 — 35B shards to ~35GB each)
@@ -130,12 +133,14 @@ resources:
     - accelerators: H100:8
       cloud: vast
     # B200:4 fallback — MoE with 3B active params fits on 4 GPUs
-    # B200:4 only available on Lambda and RunPod
     - accelerators: B200:4
       cloud: lambda
       memory: 750+
     - accelerators: B200:4
       cloud: runpod
+      memory: 750+
+    - accelerators: B200:4
+      cloud: primeintellect
       memory: 750+
     # H200-SXM:4 fallback (SkyPilot requires "H200-SXM" not "H200" for 4-GPU)
     - accelerators: H200-SXM:4
@@ -146,6 +151,9 @@ resources:
       memory: 750+
     - accelerators: H200-SXM:4
       cloud: vast
+      memory: 750+
+    - accelerators: H200-SXM:4
+      cloud: primeintellect
       memory: 750+
 
 num_nodes: 1
