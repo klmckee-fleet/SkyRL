@@ -77,6 +77,11 @@
 #           PyTorch nightly as extra-index for torch dep resolution
 #         - Previous approaches failed: version constraint alone (torch dep issue),
 #           direct wheel URL (404), pinned commit index (pip preferred stable)
+# v0.1.13: Fix FlashInfer JIT compilation error — nvcc not available on cloud instances
+#         - FlashInfer attention backend tried to JIT compile CUDA kernels via nvcc
+#           for trtllm_paged_attention_context, but cloud GPU instances lack CUDA toolkit
+#         - Switch to FLASH_ATTN backend (uses precompiled vllm._C kernels, no nvcc needed)
+#         - Only affects 10/40 standard attention layers (DeltaNet layers use own mechanism)
 
 name: fleet-task-grpo-qwen3.5-35b-a3b
 
@@ -152,9 +157,11 @@ envs:
   FLEET_API_KEY: ""
   LOGGER: "wandb"
   INFERENCE_BACKEND: "vllm"
-  # Use FLASHINFER attention backend for vLLM inference (bundled with vLLM)
-  # flash_attn stub package provides bert_padding (pure Python) for SkyRL training
-  VLLM_ATTENTION_BACKEND: "FLASHINFER"
+  # Use FLASH_ATTN backend for vLLM inference.
+  # FLASHINFER requires JIT compilation (nvcc) which many cloud instances lack.
+  # FLASH_ATTN uses precompiled kernels from the flash-attn stub or bundled vLLM kernels.
+  # flash_attn stub package provides bert_padding (pure Python) for SkyRL training.
+  VLLM_ATTENTION_BACKEND: "FLASH_ATTN"
   ENV_KEYS: ""
   # Difficulty filter: 1=easy, 2=medium, 3=hard (comma-separated, e.g., "1,2" for easy+medium)
   DIFFICULTY: ""
