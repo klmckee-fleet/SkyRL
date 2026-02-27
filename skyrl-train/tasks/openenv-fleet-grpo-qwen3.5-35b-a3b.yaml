@@ -139,10 +139,7 @@ resources:
     - accelerators: B200:4
       cloud: runpod
       memory: 750+
-    - accelerators: B200:4
-      cloud: primeintellect
-      memory: 750+
-    # H200-SXM:4 fallback (SkyPilot requires "H200-SXM" not "H200" for 4-GPU)
+    # H200-SXM:4 fallback (Lambda/RunPod/Vast use "H200-SXM" naming for 4-GPU)
     - accelerators: H200-SXM:4
       cloud: lambda
       memory: 750+
@@ -152,7 +149,8 @@ resources:
     - accelerators: H200-SXM:4
       cloud: vast
       memory: 750+
-    - accelerators: H200-SXM:4
+    # PrimeIntellect uses "H200" naming (DataCrunch backend)
+    - accelerators: H200:4
       cloud: primeintellect
       memory: 750+
 
