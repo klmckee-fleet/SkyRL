@@ -1,0 +1,52 @@
+name: "Register Harbor Runner"
+
+on:
+  workflow_dispatch:
+    inputs:
+      registration_token:
+        description: "Registration token from fleet-ai/harbor-train"
+        type: string
+        required: true
+
+jobs:
+  register:
+    strategy:
+      matrix:
+        runner: [fleet-runner-1, fleet-runner-2, fleet-runner-3, fleet-runner-4, fleet-runner-5]
+      fail-fast: false
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    steps:
+      - name: Register runner for harbor-train
+        run: |
+          RUNNER_DIR="$HOME/actions-runner-harbor"
+          RUNNER_NAME="$(hostname)-harbor"
+
+          # Check if already registered
+          if [ -f "$RUNNER_DIR/.runner" ]; then
+            echo "Runner already registered at $RUNNER_DIR"
+            cat "$RUNNER_DIR/.runner"
+            exit 0
+          fi
+
+          # Download runner
+          mkdir -p "$RUNNER_DIR" && cd "$RUNNER_DIR"
+          RUNNER_VERSION=$(curl -s https://api.github.com/repos/actions/runner/releases/latest | grep -oP '"tag_name": "v\K[^"]+')
+          echo "Downloading runner v${RUNNER_VERSION}..."
+          curl -sL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" -o runner.tar.gz
+          tar xzf runner.tar.gz && rm runner.tar.gz
+
+          # Configure
+          ./config.sh \
+            --url https://github.com/fleet-ai/harbor-train \
+            --token "${{ inputs.registration_token }}" \
+            --name "${{ matrix.runner }}" \
+            --labels self-hosted,Linux,X64,fleet-runner \
+            --work _work \
+            --unattended \
+            --replace
+
+          # Install and start as service
+          sudo ./svc.sh install || true
+          sudo ./svc.sh start || true
+
+          echo "Runner registered successfully!"
