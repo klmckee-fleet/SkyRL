@@ -22,7 +22,6 @@ from pathlib import Path
 import hydra
 import ray
 from omegaconf import DictConfig
-from skyrl_gym.envs import register
 from skyrl_train.entrypoints.main_base import BasePPOExp, config_dir, validate_cfg
 from skyrl_train.utils import initialize_ray
 
@@ -82,11 +81,8 @@ def skyrl_entrypoint(cfg: DictConfig):
     This must be a Ray remote function because environment registration needs
     to happen in the worker processes, not the driver.
     """
-    # Register the task generation environment
-    register(
-        id="task_gen",
-        entry_point="skyrl_gym.envs.task_gen.task_gen_env:TaskGenEnv",
-    )
+    # task_gen env is already registered in skyrl_gym.envs.__init__
+    # No explicit registration needed
 
     # Run training with checkpoint management
     exp = FleetPPOExp(cfg)
