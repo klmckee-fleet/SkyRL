@@ -319,8 +319,9 @@ def build_task_gen_dataset_grpo(
     for env_key, env_tasks in sorted(tasks_by_env.items()):
         print(f"  {env_key}: {len(env_tasks)} tasks")
 
-    # Build GRPO records: one prompt per environment
-    # Each env gets one record (the env context is the prompt, model generates a new task)
+    # Build GRPO records: one prompt per task (prompt-only, no response)
+    # Each task becomes one record with the same env context prompt.
+    # The model generates a *new* task each time — reward from inner-loop rollouts.
     all_records = []
 
     for env_key, env_tasks in tasks_by_env.items():
@@ -335,6 +336,11 @@ def build_task_gen_dataset_grpo(
 
         # Use first N tasks as few-shot examples in prompt
         example_tasks = env_tasks[:max_examples_per_env]
+        target_tasks = env_tasks[max_examples_per_env:]
+
+        if not target_tasks:
+            target_tasks = env_tasks
+
         example_dicts = [{"prompt": t.get("prompt", "")} for t in example_tasks]
 
         system_prompt = format_env_context_prompt(
@@ -344,24 +350,26 @@ def build_task_gen_dataset_grpo(
             example_tasks=example_dicts,
         )
 
-        # For GRPO, each env_key becomes one prompt (sampled multiple times)
-        record = {
-            "prompt": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": f"Generate a task for the {env_key} environment.",
-                },
-            ],
-            "env_class": "task_gen",
-            "data_source": env_key,
-            "env_key": env_key,
-            "env_version": env_tasks[0].get("version") or env_tasks[0].get("env_version", ""),
-            "env_tools": json.dumps(tools),
-        }
-        all_records.append(record)
+        for task in target_tasks:
+            task_key = task.get("key") or task.get("task_key", "unknown")
+            record = {
+                "prompt": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": f"Generate a task for the {env_key} environment.",
+                    },
+                ],
+                "env_class": "task_gen",
+                "data_source": env_key,
+                "task_key": task_key,
+                "env_key": env_key,
+                "env_version": task.get("version") or task.get("env_version", ""),
+                "env_tools": json.dumps(tools),
+            }
+            all_records.append(record)
 
-    print(f"\nTotal GRPO records (one per env): {len(all_records)}")
+    print(f"\nTotal GRPO records: {len(all_records)}")
 
     # Split into train/eval
     import hashlib
@@ -370,7 +378,7 @@ def build_task_gen_dataset_grpo(
     eval_records = []
 
     for record in all_records:
-        h = hashlib.md5(record["env_key"].encode()).hexdigest()
+        h = hashlib.md5(record["task_key"].encode()).hexdigest()
         if int(h[:8], 16) / (16**8) < eval_ratio:
             eval_records.append(record)
         else:
@@ -392,12 +400,17 @@ def build_task_gen_dataset_grpo(
         print(f"Saved validation to {output_dir}/validation.parquet")
 
     # Print per-env breakdown
-    print(f"\n{'Environment':<20} {'Split':>8}")
-    print("-" * 30)
+    env_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"train": 0, "eval": 0})
     for r in train_records:
-        print(f"{r['env_key']:<20} {'train':>8}")
+        env_counts[r["data_source"]]["train"] += 1
     for r in eval_records:
-        print(f"{r['env_key']:<20} {'eval':>8}")
+        env_counts[r["data_source"]]["eval"] += 1
+
+    print(f"\n{'Environment':<20} {'Train':>8} {'Eval':>8}")
+    print("-" * 40)
+    for env_key in sorted(env_counts.keys()):
+        c = env_counts[env_key]
+        print(f"{env_key:<20} {c['train']:>8} {c['eval']:>8}")
 
 
 def main():
