@@ -146,8 +146,9 @@ Generate exactly ONE task. Output it in this format:
 - Verifiers must check observable state changes, not just echo the prompt
 - The verifier must return 0.0 on a fresh environment (before any agent actions)
 - Use the actual tool names and data entities from this environment
-- Vary difficulty: some tasks should need 1-2 tool calls, others 3-5+
-- Don't hardcode expected values that mirror the prompt"""
+- Vary difficulty: some tasks should need 1-2 tool calls, others 5-15+
+- Don't hardcode expected values that mirror the prompt
+- Verifiers should check end-state thoroughly enough that a model can't appear to succeed without actually completing the task"""
 
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
