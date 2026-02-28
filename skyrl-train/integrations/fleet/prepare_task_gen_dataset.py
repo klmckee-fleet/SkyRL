@@ -1,18 +1,20 @@
 """
-Prepare SFT warmup dataset for task generation.
+Prepare dataset for task generation training.
 
-Converts existing Fleet tasks into (env_context, task_spec) pairs for
-supervised fine-tuning of the task generator model.
-
-Each training example:
-    Input: Environment context (tool list, schema, example tasks)
-    Output: Task spec (<task><prompt>...</prompt><verifier>...</verifier></task>)
+Supports two modes:
+    --mode sft:  (env_context, task_spec) pairs for supervised fine-tuning
+    --mode grpo: Prompt-only records (env contexts) for GRPO reinforcement learning
 
 Usage:
+    # GRPO (default): prompts only, reward comes from inner-loop rollouts
     python -m integrations.fleet.prepare_task_gen_dataset \
         --tasks-json ~/data/fleet/all_tool_use.json \
-        --output-dir ./data/task_gen \
-        --env-context-dir ./configs/environments
+        --output-dir ./data/task_gen --mode grpo
+
+    # SFT: supervised pairs with response
+    python -m integrations.fleet.prepare_task_gen_dataset \
+        --tasks-json ~/data/fleet/all_tool_use.json \
+        --output-dir ./data/task_gen --mode sft
 """
 
 import argparse
@@ -117,13 +119,14 @@ Generate exactly ONE task with a prompt and verifier function.
 </task>"""
 
 
-def build_task_gen_dataset(
+def build_task_gen_dataset_sft(
     tasks_json: str,
     output_dir: str,
     env_context_dir: Optional[str] = None,
     eval_ratio: float = 0.15,
     min_verifier_len: int = 50,
     max_examples_per_env: int = 3,
+    max_tasks: Optional[int] = None,
 ):
     """Build SFT dataset from existing Fleet tasks.
 
@@ -137,10 +140,15 @@ def build_task_gen_dataset(
         eval_ratio: Fraction for evaluation split
         min_verifier_len: Minimum verifier code length to include
         max_examples_per_env: Number of example tasks to include in prompt
+        max_tasks: Maximum total tasks to include (for testing)
     """
     print(f"Loading tasks from {tasks_json}...")
     tasks = load_tasks(tasks_json)
     print(f"Loaded {len(tasks)} tasks")
+
+    if max_tasks and len(tasks) > max_tasks:
+        tasks = tasks[:max_tasks]
+        print(f"Truncated to {max_tasks} tasks")
 
     # Filter: must have verifier code
     tasks_with_verifier = []
@@ -259,8 +267,141 @@ def build_task_gen_dataset(
         print(f"{env_key:<20} {c['train']:>8} {c['eval']:>8}")
 
 
+def build_task_gen_dataset_grpo(
+    tasks_json: str,
+    output_dir: str,
+    env_context_dir: Optional[str] = None,
+    eval_ratio: float = 0.15,
+    min_verifier_len: int = 50,
+    max_examples_per_env: int = 3,
+    max_tasks: Optional[int] = None,
+):
+    """Build GRPO dataset from existing Fleet tasks.
+
+    Creates prompt-only records: each record has the env context as the prompt
+    (system + user messages) but no response. The reward comes from inner-loop
+    rollouts during GRPO training.
+
+    Records include env_key, env_tools, env_version as extras for TaskGenEnv.
+
+    Args:
+        tasks_json: Path to Fleet tasks JSON
+        output_dir: Output directory for parquet files
+        env_context_dir: Directory with per-env context configs
+        eval_ratio: Fraction for evaluation split
+        min_verifier_len: Minimum verifier code length to include
+        max_examples_per_env: Number of example tasks to include in prompt
+        max_tasks: Maximum total tasks to include (for testing)
+    """
+    print(f"Loading tasks from {tasks_json}...")
+    tasks = load_tasks(tasks_json)
+    print(f"Loaded {len(tasks)} tasks")
+
+    if max_tasks and len(tasks) > max_tasks:
+        tasks = tasks[:max_tasks]
+        print(f"Truncated to {max_tasks} tasks")
+
+    # Filter: must have verifier code (so we know the env produces real tasks)
+    tasks_with_verifier = []
+    for t in tasks:
+        verifier = t.get("verifier_func") or t.get("verifier_code", "")
+        if verifier and len(verifier) >= min_verifier_len:
+            tasks_with_verifier.append(t)
+    print(f"Tasks with verifier (>= {min_verifier_len} chars): {len(tasks_with_verifier)}")
+
+    # Group by environment
+    tasks_by_env: Dict[str, List[Dict]] = defaultdict(list)
+    for t in tasks_with_verifier:
+        env_key = t.get("env_key") or t.get("env_id") or "unknown"
+        tasks_by_env[env_key].append(t)
+
+    print(f"\nEnvironments: {len(tasks_by_env)}")
+    for env_key, env_tasks in sorted(tasks_by_env.items()):
+        print(f"  {env_key}: {len(env_tasks)} tasks")
+
+    # Build GRPO records: one prompt per environment
+    # Each env gets one record (the env context is the prompt, model generates a new task)
+    all_records = []
+
+    for env_key, env_tasks in tasks_by_env.items():
+        # Load env context if available
+        env_ctx = None
+        if env_context_dir:
+            env_ctx = load_env_context(env_context_dir, env_key)
+
+        tools = []
+        if env_ctx:
+            tools = env_ctx.get("tools", [])
+
+        # Use first N tasks as few-shot examples in prompt
+        example_tasks = env_tasks[:max_examples_per_env]
+        example_dicts = [{"prompt": t.get("prompt", "")} for t in example_tasks]
+
+        system_prompt = format_env_context_prompt(
+            env_key=env_key,
+            tools=tools,
+            schema=env_ctx.get("schema", "") if env_ctx else "",
+            example_tasks=example_dicts,
+        )
+
+        # For GRPO, each env_key becomes one prompt (sampled multiple times)
+        record = {
+            "prompt": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Generate a task for the {env_key} environment.",
+                },
+            ],
+            "env_class": "task_gen",
+            "data_source": env_key,
+            "env_key": env_key,
+            "env_version": env_tasks[0].get("version") or env_tasks[0].get("env_version", ""),
+            "env_tools": json.dumps(tools),
+        }
+        all_records.append(record)
+
+    print(f"\nTotal GRPO records (one per env): {len(all_records)}")
+
+    # Split into train/eval
+    import hashlib
+
+    train_records = []
+    eval_records = []
+
+    for record in all_records:
+        h = hashlib.md5(record["env_key"].encode()).hexdigest()
+        if int(h[:8], 16) / (16**8) < eval_ratio:
+            eval_records.append(record)
+        else:
+            train_records.append(record)
+
+    print(f"Train: {len(train_records)}, Eval: {len(eval_records)}")
+
+    # Save
+    os.makedirs(output_dir, exist_ok=True)
+
+    if train_records:
+        train_ds = Dataset.from_list(train_records)
+        train_ds.to_parquet(os.path.join(output_dir, "train.parquet"))
+        print(f"Saved train to {output_dir}/train.parquet")
+
+    if eval_records:
+        eval_ds = Dataset.from_list(eval_records)
+        eval_ds.to_parquet(os.path.join(output_dir, "validation.parquet"))
+        print(f"Saved validation to {output_dir}/validation.parquet")
+
+    # Print per-env breakdown
+    print(f"\n{'Environment':<20} {'Split':>8}")
+    print("-" * 30)
+    for r in train_records:
+        print(f"{r['env_key']:<20} {'train':>8}")
+    for r in eval_records:
+        print(f"{r['env_key']:<20} {'eval':>8}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Prepare SFT dataset for task generation")
+    parser = argparse.ArgumentParser(description="Prepare dataset for task generation")
     parser.add_argument(
         "--tasks-json",
         type=str,
@@ -272,6 +413,13 @@ def main():
         type=str,
         default="./data/task_gen",
         help="Output directory for parquet files",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="grpo",
+        choices=["grpo", "sft"],
+        help="Dataset mode: 'grpo' (prompt-only) or 'sft' (prompt+response)",
     )
     parser.add_argument(
         "--env-context-dir",
@@ -291,16 +439,33 @@ def main():
         default=50,
         help="Minimum verifier code length to include",
     )
+    parser.add_argument(
+        "--max-tasks",
+        type=int,
+        default=None,
+        help="Maximum number of tasks to include (for testing)",
+    )
 
     args = parser.parse_args()
 
-    build_task_gen_dataset(
-        tasks_json=args.tasks_json,
-        output_dir=args.output_dir,
-        env_context_dir=args.env_context_dir,
-        eval_ratio=args.eval_ratio,
-        min_verifier_len=args.min_verifier_len,
-    )
+    if args.mode == "grpo":
+        build_task_gen_dataset_grpo(
+            tasks_json=args.tasks_json,
+            output_dir=args.output_dir,
+            env_context_dir=args.env_context_dir,
+            eval_ratio=args.eval_ratio,
+            min_verifier_len=args.min_verifier_len,
+            max_tasks=args.max_tasks,
+        )
+    else:
+        build_task_gen_dataset_sft(
+            tasks_json=args.tasks_json,
+            output_dir=args.output_dir,
+            env_context_dir=args.env_context_dir,
+            eval_ratio=args.eval_ratio,
+            min_verifier_len=args.min_verifier_len,
+            max_tasks=args.max_tasks,
+        )
 
 
 if __name__ == "__main__":
