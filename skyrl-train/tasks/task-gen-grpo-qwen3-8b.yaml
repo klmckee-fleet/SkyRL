@@ -14,6 +14,7 @@ name: task-gen-grpo-qwen3-8b
 resources:
   disk_size: 256
   ports: 6479
+  memory: 200+
   any_of:
     - accelerators: B200:1
       cloud: lambda
@@ -177,7 +178,7 @@ run: |
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.8 \
+    generator.gpu_memory_utilization=0.7 \
     trainer.logger="$LOGGER" \
     trainer.project_name="task-gen-grpo" \
     trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
