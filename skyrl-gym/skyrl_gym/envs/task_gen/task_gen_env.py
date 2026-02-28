@@ -11,7 +11,9 @@ task_evaluator module.
 """
 
 import asyncio
+import json
 import logging
+import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from omegaconf import DictConfig
@@ -71,12 +73,20 @@ class TaskGenEnv(BaseTextEnv):
         self.evaluator_url = env_config.get("evaluator_url")
         self.k_rollouts = env_config.get("k_rollouts", 4)
         self.models = env_config.get("models", ["weak"])
-        self.api_key = env_config.get("api_key")
+        self.api_key = env_config.get("api_key") or os.environ.get("FLEET_API_KEY")
 
         # Environment context from dataset (extras)
         self.env_key = extras.get("env_key", "unknown")
         self.env_version = extras.get("env_version", "")
-        self.env_tools: List[str] = extras.get("env_tools", [])
+        # env_tools may be a JSON string from parquet deserialization
+        env_tools_raw = extras.get("env_tools", [])
+        if isinstance(env_tools_raw, str):
+            try:
+                self.env_tools: List[str] = json.loads(env_tools_raw)
+            except json.JSONDecodeError:
+                self.env_tools: List[str] = []
+        else:
+            self.env_tools: List[str] = env_tools_raw or []
         self.env_schema: str = extras.get("env_schema", "")
         self.example_tasks: List[Dict[str, str]] = extras.get("example_tasks", [])
 
