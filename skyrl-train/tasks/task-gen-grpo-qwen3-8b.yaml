@@ -178,7 +178,7 @@ run: |
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.7 \
+    generator.gpu_memory_utilization=0.5 \
     trainer.logger="$LOGGER" \
     trainer.project_name="task-gen-grpo" \
     trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
