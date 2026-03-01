@@ -2,19 +2,17 @@
 Task Generation Environment for SkyRL.
 
 Single-turn BaseTextEnv where the LLM generates (prompt, verifier) for a Fleet
-environment. Reward is computed from rollout outcomes:
+environment. Reward is computed from validation quality:
 
-    R(task) = validity * (variance + alpha * separation)
+    R(task) = validation_score  (graduated: 0.0 to 1.0 based on checks passed)
 
-The evaluator (inner loop) runs on Fleet infrastructure via OpenEnv's
-task_evaluator module.
+Phase 1: Validity-based reward (no inner-loop evaluation).
+Phase 2 (future): Add evaluator-based reward via Fleet harness rollouts.
 """
 
-import asyncio
 import json
 import logging
-import os
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Tuple
 
 from omegaconf import DictConfig
 
@@ -39,20 +37,16 @@ class TaskGenEnv(BaseTextEnv):
     consisting of a prompt and verifier function.
 
     This is a single-turn environment: one generation = one task = one episode.
-    The reward comes from evaluating the generated task via Fleet rollouts.
 
-    Constructor args (via env_config):
-        evaluator_url: URL for the task evaluator service (OpenEnv)
-        alpha: Weight for separation term in reward (default: 0.5)
-        k_rollouts: Number of rollouts per model (default: 4)
-        models: List of model IDs for rollout evaluation
-        api_key: Fleet API key for the evaluator
+    Phase 1: Reward comes from graduated validity scoring (sandbox checks).
+    Phase 2 (future): Add evaluator-based reward via Fleet harness rollouts.
 
     Constructor args (via extras, from dataset):
         env_key: Fleet environment key (e.g., "github", "booking-com")
         env_version: Fleet environment version
         env_tools: JSON string of tool name list
         env_tools_schema: JSON string of full OpenAI-format tool schemas
+        env_variable_keys: JSON string of available context variable names
     """
 
     def __init__(
@@ -64,15 +58,6 @@ class TaskGenEnv(BaseTextEnv):
 
         # Single-turn: one generation per episode
         self.max_turns = 1
-
-        # Reward weights
-        self.alpha = env_config.get("alpha", 0.5)
-
-        # Evaluator configuration
-        self.evaluator_url = env_config.get("evaluator_url")
-        self.k_rollouts = env_config.get("k_rollouts", 4)
-        self.models = env_config.get("models", ["anthropic/claude-sonnet-4.5"])
-        self.api_key = env_config.get("api_key") or os.environ.get("FLEET_API_KEY")
 
         # Environment context from dataset (extras)
         self.env_key = extras.get("env_key", "unknown")
@@ -116,26 +101,9 @@ class TaskGenEnv(BaseTextEnv):
         else:
             self.env_variable_keys: List[str] = env_var_keys_raw or []
 
-        # Verifier sandbox
-        self.sandbox = VerifierSandbox(available_tools=set(self.env_tools) if self.env_tools else None)
-
-        # Evaluator instance (lazy import to avoid circular deps)
-        self._evaluator = None
-
-    def _get_evaluator(self):
-        """Lazy-load the evaluator to avoid import issues at module level."""
-        if self._evaluator is None:
-            try:
-                from envs.fleet_env.task_evaluator import TaskEvaluator
-
-                self._evaluator = TaskEvaluator(
-                    api_key=self.api_key,
-                    k_rollouts=self.k_rollouts,
-                    models=self.models,
-                )
-            except ImportError:
-                logger.warning("TaskEvaluator not available. Install OpenEnv or set evaluator_url.")
-        return self._evaluator
+        # Verifier sandbox — filters out CUA-only tool "computer" from available tools
+        api_tools = set(self.env_tools) - {"computer"} if self.env_tools else None
+        self.sandbox = VerifierSandbox(available_tools=api_tools if api_tools else None)
 
     def _format_tool_schema(self, tool: Dict[str, Any]) -> str:
         """Format a single tool schema for the system prompt."""
@@ -167,11 +135,15 @@ class TaskGenEnv(BaseTextEnv):
         parts.append(f"\n## Environment: {self.env_key}")
         parts.append("\n### Available Tools")
 
-        if self.env_tools_schema:
-            for tool in self.env_tools_schema:
+        # Filter out CUA-only "computer" tool — task-gen is for tool-use APIs
+        api_schemas = [t for t in self.env_tools_schema if t.get("function", {}).get("name") != "computer"]
+        api_tool_names = [t for t in self.env_tools if t != "computer"]
+
+        if api_schemas:
+            for tool in api_schemas:
                 parts.append(self._format_tool_schema(tool))
-        elif self.env_tools:
-            parts.append("\n".join(f"- {t}" for t in self.env_tools))
+        elif api_tool_names:
+            parts.append("\n".join(f"- {t}" for t in api_tool_names))
         else:
             parts.append("No tools discovered for this environment.")
 
@@ -187,11 +159,33 @@ class TaskGenEnv(BaseTextEnv):
             """
 ## Verifier Guidelines
 
-- Signature: `async def verify(env, final_answer=None) -> float` returning 1.0 (pass) or 0.0 (fail)
-- Use `env` to call tools and check state — don't hardcode expected values
+The verifier checks whether the agent completed the task by inspecting database state changes.
+
+Signature: `def verify(env, final_answer=None) -> float` returning 1.0 (pass) or 0.0 (fail).
+
+### Verifier API
+```python
+env.instance.load()              # Load current state (call first)
+seed = env.db("seed")            # Original DB before agent acted
+current = env.db("current")      # Current DB after agent acted
+
+# Query tables:
+rows = current.table("table_name").eq("column", value).all()
+rows = current.table("table_name").neq("column", value).all()
+count = current.table("table_name").eq("column", value).count()
+
+# Compare seed vs current to detect state changes:
+seed_rows = seed.table("orders").all()
+current_rows = current.table("orders").all()
+new_orders = [r for r in current_rows if r not in seed_rows]
+```
+
+### Rules
+- Compare `seed` (before) vs `current` (after) to detect what the agent did
 - Must return 0.0 on a fresh environment (before agent acts)
-- Avoid underspecification: if the prompt says "find the designer in Mexico" but multiple designers exist, the verifier must accept all valid answers (or make the prompt specific enough to have one answer)
-- Avoid overspecification: don't prescribe exact tool call sequences in the prompt — specify WHAT, not HOW
+- Use `final_answer` for tasks that require the agent to report a value
+- Don't hardcode expected values — query the DB to find them
+- Reference actual tool names from this environment
 
 ## Task Guidelines
 
@@ -199,9 +193,8 @@ class TaskGenEnv(BaseTextEnv):
 - Vary difficulty: some tasks need 1-2 tool calls, others 5-15+
 - Don't leak the answer in the prompt
 - Use the actual tool names and data entities from this environment
-- Prioritize structural complexity — tasks requiring genuine multi-step reasoning, not tasks exploiting a specific model's blind spot
-- Prioritize environment fidelity — tasks that reflect real software workflows so skills transfer to real-world use
-- Prioritize diverse coverage — broad tool/workflow coverage rather than deep exploitation of a few failure modes"""
+- Avoid underspecification: if the prompt says "find the designer in Mexico" but multiple exist, the verifier must accept all valid answers (or make the prompt specific enough)
+- Avoid overspecification: specify WHAT to do, not HOW"""
         )
 
         # --- C. Output format ---
@@ -216,7 +209,7 @@ Generate exactly ONE task. Output it in this format:
 [Natural language task instruction for the agent. Be specific about what needs to be done.]
 </prompt>
 <verifier>
-[Python async function: async def verify(env, final_answer=None) -> float]
+[Python function: def verify(env, final_answer=None) -> float]
 </verifier>
 </task>"""
         )
@@ -226,16 +219,16 @@ Generate exactly ONE task. Output it in this format:
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
 
+        Reward is a graduated validity score based on how many sandbox
+        checks pass. This gives GRPO signal even without inner-loop
+        evaluation (Phase 1).
+
         Args:
             action: LLM output containing <task><prompt>...</prompt><verifier>...</verifier></task>
 
         Returns:
-            BaseTextEnvStepOutput with reward from rollout evaluation.
+            BaseTextEnvStepOutput with graduated validity reward.
         """
-        return asyncio.run(self.step_async(action))
-
-    async def step_async(self, action: str) -> BaseTextEnvStepOutput:
-        """Async version of step."""
         self.turns += 1
         metadata: Dict[str, Any] = {"env_key": self.env_key}
 
@@ -243,6 +236,7 @@ Generate exactly ONE task. Output it in this format:
         parsed = parse_task_output(action)
         if parsed is None:
             metadata["error"] = "parse_failed"
+            metadata["reward_breakdown"] = {"parse": 0.0, "total": 0.0}
             return BaseTextEnvStepOutput(
                 observations=[],
                 reward=0.0,
@@ -255,7 +249,7 @@ Generate exactly ONE task. Output it in this format:
         metadata["generated_prompt"] = prompt
         metadata["generated_verifier"] = verifier
 
-        # 2. Validate via sandbox (validity gate)
+        # 2. Validate via sandbox — graduated score
         validation = self.sandbox.validate(verifier, prompt)
         metadata["validation"] = {
             "valid": validation.valid,
@@ -264,67 +258,19 @@ Generate exactly ONE task. Output it in this format:
             "error": validation.error,
         }
 
-        if not validation.valid:
-            metadata["reward_breakdown"] = {
-                "validity": 0.0,
-                "variance": 0.0,
-                "separation": 0.0,
-                "total": 0.0,
-            }
-            return BaseTextEnvStepOutput(
-                observations=[],
-                reward=0.0,
-                done=True,
-                metadata=metadata,
-            )
+        # Graduated reward: fraction of checks passed
+        # Parse success = 1 bonus check (we got past parse_task_output)
+        total_checks = len(validation.checks_passed) + len(validation.checks_failed) + 1
+        passed_checks = len(validation.checks_passed) + 1  # +1 for parse success
+        reward = passed_checks / total_checks
 
-        # 3. Run evaluation (inner loop) — k rollouts x m models
-        evaluator = self._get_evaluator()
-        if evaluator is None:
-            # No evaluator available — return validity-only reward
-            metadata["reward_breakdown"] = {
-                "validity": 1.0,
-                "variance": 0.0,
-                "separation": 0.0,
-                "total": 0.0,
-            }
-            metadata["error"] = "no_evaluator"
-            return BaseTextEnvStepOutput(
-                observations=[],
-                reward=0.0,
-                done=True,
-                metadata=metadata,
-            )
-
-        try:
-            eval_results = await evaluator.evaluate(
-                prompt=prompt,
-                verifier_code=verifier,
-                env_key=self.env_key,
-                env_version=self.env_version,
-                data_key=self.data_key or None,
-                data_version=self.data_version or None,
-            )
-        except Exception as e:
-            logger.error(f"Evaluation failed for env={self.env_key}: {e}")
-            metadata["error"] = f"eval_failed: {e}"
-            metadata["reward_breakdown"] = {
-                "validity": 1.0,
-                "variance": 0.0,
-                "separation": 0.0,
-                "total": 0.0,
-            }
-            return BaseTextEnvStepOutput(
-                observations=[],
-                reward=0.0,
-                done=True,
-                metadata=metadata,
-            )
-
-        # 4. Compute reward from evaluation results
-        reward, breakdown = self._compute_reward(eval_results)
-        metadata["eval_results"] = eval_results
-        metadata["reward_breakdown"] = breakdown
+        metadata["reward_breakdown"] = {
+            "parse": 1.0,
+            "checks_passed": len(validation.checks_passed),
+            "checks_failed": len(validation.checks_failed),
+            "total_checks": total_checks,
+            "total": reward,
+        }
 
         return BaseTextEnvStepOutput(
             observations=[],
@@ -332,50 +278,6 @@ Generate exactly ONE task. Output it in this format:
             done=True,
             metadata=metadata,
         )
-
-    def _compute_reward(self, eval_results: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
-        """Compute composite reward from evaluation results.
-
-        R(task) = validity * (variance + alpha * separation)
-
-        Args:
-            eval_results: Dict with 'results_per_model' mapping model_id -> list[float]
-
-        Returns:
-            (total_reward, breakdown_dict)
-        """
-        # Import here to avoid circular dependency
-        from integrations.fleet.task_gen_reward import (
-            compute_learnability,
-            compute_separation,
-        )
-
-        results_per_model = eval_results.get("results_per_model", {})
-
-        if not results_per_model:
-            return 0.0, {
-                "validity": 1.0,
-                "variance": 0.0,
-                "separation": 0.0,
-                "total": 0.0,
-            }
-
-        variance = compute_learnability(results_per_model)
-        separation = compute_separation(results_per_model)
-
-        # Validity already passed (we're past the gate)
-        validity = 1.0
-        total = validity * (variance + self.alpha * separation)
-
-        breakdown = {
-            "validity": validity,
-            "variance": variance,
-            "separation": separation,
-            "alpha": self.alpha,
-            "total": total,
-        }
-
-        return total, breakdown
 
     def init(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """Initialize the environment with env context as the prompt.

@@ -3,7 +3,7 @@
 #
 # This task trains GRPO on a task-generation environment. The LLM generates
 # (prompt, verifier) pairs for Fleet environments, and reward comes from
-# inner-loop rollouts that measure learnability and model separation.
+# graduated validity scoring (Phase 1: sandbox checks, no inner-loop eval).
 #
 # Model: Qwen/Qwen3-8B
 # GPUs: 4 (FSDP2 + Adam requires >80GB per GPU with 2 GPUs)
@@ -46,8 +46,8 @@ envs:
   MODALITY: "tool_use"
   # Single-turn: one task generation per episode
   MAX_TURNS: 1
-  MAX_INPUT_LENGTH: 4096
-  MAX_GENERATE_LENGTH: 4096
+  MAX_INPUT_LENGTH: 8192
+  MAX_GENERATE_LENGTH: 8192
   NUM_EPOCHS: 20
   RUN_ID: ""
   MAX_TASKS: ""
@@ -58,10 +58,6 @@ envs:
   S3_DATASET_BUCKET: "fleet-internal-datasets"
   S3_CHECKPOINT_BUCKET: "skyrl-checkpoints"
   S3_TRAJECTORY_BUCKET: "skyrl-trajectories"
-  # Task-gen env config
-  TASK_GEN_ALPHA: "0.5"
-  TASK_GEN_K_ROLLOUTS: "4"
-  TASK_GEN_MODELS: "anthropic/claude-sonnet-4.5,anthropic/claude-opus-4.5"
 
 setup: |
   set -euo pipefail
@@ -78,7 +74,7 @@ setup: |
   uv sync --extra vllm
   uv pip install wandb boto3 awscli
 
-  # Install OpenEnv with task_evaluator support (from branch)
+  # Install OpenEnv (from branch) for tool discovery during dataset prep
   uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/task-scaling" fleet-python logfire "mcp>=1.0.0"
 
   # Download dataset from S3
@@ -131,18 +127,11 @@ run: |
   # Run GRPO training with task-gen environment
   uv run --isolated --extra "$INFERENCE_BACKEND" \
     --with "litellm>=1.75.5" \
-    --with "git+https://github.com/fleet-ai/OpenEnv.git@deniz/task-scaling" \
-    --with "fleet-python" \
-    --with "logfire" \
-    --with "mcp>=1.0.0" \
     --with "boto3" \
     -m integrations.fleet.entrypoints.main_task_gen \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/validation.parquet']" \
     environment.env_class=task_gen \
-    ++environment.skyrl_gym.task_gen.alpha=${TASK_GEN_ALPHA} \
-    ++environment.skyrl_gym.task_gen.k_rollouts=${TASK_GEN_K_ROLLOUTS} \
-    ++environment.skyrl_gym.task_gen.models="[${TASK_GEN_MODELS}]" \
     trainer.algorithm.advantage_estimator="grpo" \
     trainer.policy.model.path="Qwen/Qwen3-8B" \
     trainer.placement.colocate_all=true \
@@ -178,7 +167,7 @@ run: |
     generator.weight_sync_backend=nccl \
     generator.async_engine=true \
     generator.batched=false \
-    generator.trajectory_timeout_seconds=1800 \
+    generator.trajectory_timeout_seconds=300 \
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
