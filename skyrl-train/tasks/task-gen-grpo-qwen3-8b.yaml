@@ -6,7 +6,7 @@
 # inner-loop rollouts that measure learnability and model separation.
 #
 # Model: Qwen/Qwen3-8B
-# GPUs: 1 (bottleneck is Fleet rollouts, not inference)
+# GPUs: 4 (FSDP2 + Adam requires >80GB per GPU with 2 GPUs)
 # Single-turn: one generation = one task = one episode
 
 name: task-gen-grpo-qwen3-8b
@@ -16,19 +16,19 @@ resources:
   ports: 6479
   memory: 350+
   any_of:
-    - accelerators: B200:2
+    - accelerators: B200:4
       cloud: lambda
-    - accelerators: B200:2
+    - accelerators: B200:4
       cloud: runpod
-    - accelerators: H200-SXM:2
+    - accelerators: H200-SXM:4
       cloud: lambda
-    - accelerators: H200-SXM:2
+    - accelerators: H200-SXM:4
       cloud: runpod
-    - accelerators: H200-SXM:2
+    - accelerators: H200-SXM:4
       cloud: vast
-    - accelerators: A100-80GB:2
+    - accelerators: A100-80GB:4
       cloud: lambda
-    - accelerators: A100-80GB:2
+    - accelerators: A100-80GB:4
       cloud: runpod
 
 num_nodes: 1
@@ -178,6 +178,7 @@ run: |
     generator.weight_sync_backend=nccl \
     generator.async_engine=true \
     generator.batched=false \
+    generator.trajectory_timeout_seconds=1800 \
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
