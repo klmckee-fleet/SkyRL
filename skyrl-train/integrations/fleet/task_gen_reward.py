@@ -5,8 +5,9 @@ Computes:
     R(task) = validity * (variance + alpha * separation)
 
 Components:
-    - Learnability (variance): Mean variance of solve outcomes across k rollouts per model.
-      Maximized when p_solve ≈ 0.5 (max Bernoulli variance = 0.25).
+    - Learnability (variance): Variance of rollout outcomes for the STRONG model
+      (highest solve rate). Maximized when p_solve ≈ 0.5 (max Bernoulli variance = 0.25).
+      We want tasks at the right difficulty for the best model — learnable but not trivial.
     - Separation: Gap between strongest and weakest model solve rates.
       Higher = task better differentiates model capabilities.
     - Validity: Multiplicative gate from verifier_sandbox.py.
@@ -17,10 +18,11 @@ from typing import Any, Dict, List
 
 
 def compute_learnability(results_per_model: Dict[str, List[float]]) -> float:
-    """Compute learnability as mean rollout variance, normalized to [0, 1].
+    """Compute learnability as variance of the STRONG model's rollouts, normalized to [0, 1].
 
-    For each model, compute the variance of k binary rollout outcomes.
-    Average across models and normalize by max Bernoulli variance (0.25).
+    Uses the model with the highest solve rate (the "strong" model) and computes
+    the variance of its k binary rollout outcomes. Normalized by max Bernoulli
+    variance (0.25).
 
     Highest signal when p_solve ≈ 0.5 (some rollouts pass, some fail).
     Zero signal when p_solve ≈ 0 or p_solve ≈ 1 (all same outcome).
@@ -34,18 +36,24 @@ def compute_learnability(results_per_model: Dict[str, List[float]]) -> float:
     if not results_per_model:
         return 0.0
 
-    variances = []
+    # Find the strong model (highest solve rate)
+    best_results = None
+    best_solve_rate = -1.0
     for results in results_per_model.values():
         if len(results) < 2:
-            variances.append(0.0)
             continue
-        mean = sum(results) / len(results)
-        var = sum((r - mean) ** 2 for r in results) / len(results)
-        variances.append(var)
+        solve_rate = sum(results) / len(results)
+        if solve_rate > best_solve_rate:
+            best_solve_rate = solve_rate
+            best_results = results
 
-    mean_var = sum(variances) / len(variances)
+    if best_results is None or len(best_results) < 2:
+        return 0.0
+
+    mean = sum(best_results) / len(best_results)
+    var = sum((r - mean) ** 2 for r in best_results) / len(best_results)
     # Normalize by max Bernoulli variance (0.25) to get [0, 1]
-    return min(mean_var / 0.25, 1.0)
+    return min(var / 0.25, 1.0)
 
 
 def compute_separation(results_per_model: Dict[str, List[float]]) -> float:

@@ -60,7 +60,7 @@ envs:
   # Task-gen env config
   TASK_GEN_ALPHA: "0.5"
   TASK_GEN_K_ROLLOUTS: "4"
-  TASK_GEN_MODELS: "weak"
+  TASK_GEN_MODELS: "claude-sonnet-4.5,claude-opus-4.5"
 
 setup: |
   set -euo pipefail
