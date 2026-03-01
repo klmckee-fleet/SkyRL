@@ -138,18 +138,33 @@ Generate exactly ONE task with a prompt and verifier function.
 # ---------------------------------------------------------------------------
 
 
-async def _discover_env_tools_async(env_key: str, api_key: str, ttl_seconds: int = 300) -> List[Dict[str, Any]]:
+async def _discover_env_tools_async(
+    env_key: str,
+    api_key: str,
+    data_key: Optional[str] = None,
+    data_version: Optional[str] = None,
+    ttl_seconds: int = 300,
+) -> List[Dict[str, Any]]:
     """Provision a short-lived Fleet environment and list its tools.
 
     Uses OpenEnv's FleetEnvClient.from_fleet() (sync provisioning) then
     FleetMCPTools.list_tools() (async MCP call) to get tool schemas in
     OpenAI format.
 
+    Passes data_key/data_version so the environment is provisioned with the
+    correct data seed (required for some envs to expose their tools).
+
     Returns list of tool dicts: [{"type": "function", "function": {...}}, ...]
     """
     from envs.fleet_env.client import FleetEnvClient
 
-    orch, tools_client = FleetEnvClient.from_fleet(api_key=api_key, env_key=env_key, ttl_seconds=ttl_seconds)
+    orch, tools_client = FleetEnvClient.from_fleet(
+        api_key=api_key,
+        env_key=env_key,
+        data_key=data_key,
+        data_version=data_version,
+        ttl_seconds=ttl_seconds,
+    )
     try:
         result = await tools_client.list_tools()
         return result.tools
@@ -160,21 +175,65 @@ async def _discover_env_tools_async(env_key: str, api_key: str, ttl_seconds: int
             logger.warning(f"[{env_key}] Error closing environment: {e}")
 
 
-def discover_env_tools(env_key: str, api_key: str, ttl_seconds: int = 300) -> List[Dict[str, Any]]:
+def discover_env_tools(
+    env_key: str,
+    api_key: str,
+    data_key: Optional[str] = None,
+    data_version: Optional[str] = None,
+    ttl_seconds: int = 300,
+) -> List[Dict[str, Any]]:
     """Sync wrapper: provision Fleet env → list_tools() → destroy.
 
     Returns tool schemas in OpenAI format, or empty list on failure.
     """
     try:
-        return asyncio.run(_discover_env_tools_async(env_key, api_key, ttl_seconds))
+        return asyncio.run(_discover_env_tools_async(env_key, api_key, data_key, data_version, ttl_seconds))
     except Exception as e:
         logger.error(f"[{env_key}] Tool discovery failed: {e}")
         return []
 
 
+def _collect_env_metadata(
+    tasks_by_env: Dict[str, List[Dict]],
+) -> Dict[str, Dict[str, Any]]:
+    """Collect per-environment metadata from tasks.
+
+    For each environment, extracts:
+    - data_key / data_version (from first task, same for all tasks in env)
+    - env_variable_keys: sorted list of unique env_variable keys across all tasks
+
+    Returns dict mapping env_key -> {"data_key": ..., "data_version": ..., "env_variable_keys": [...]}
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+    for env_key, env_tasks in tasks_by_env.items():
+        # data_key/data_version are env-level (same across tasks)
+        first_task = env_tasks[0]
+        data_key = first_task.get("data_key")
+        data_version = first_task.get("data_version")
+
+        # Collect all unique env_variable keys across tasks
+        all_var_keys: set = set()
+        for t in env_tasks:
+            env_vars = t.get("env_variables") or {}
+            if isinstance(env_vars, str):
+                try:
+                    env_vars = json.loads(env_vars)
+                except json.JSONDecodeError:
+                    env_vars = {}
+            all_var_keys.update(env_vars.keys())
+
+        result[env_key] = {
+            "data_key": data_key,
+            "data_version": data_version,
+            "env_variable_keys": sorted(all_var_keys),
+        }
+    return result
+
+
 def discover_all_env_tools(
     env_keys: List[str],
     api_key: str,
+    env_metadata: Dict[str, Dict[str, Any]],
     cache_path: Optional[str] = None,
     ttl_seconds: int = 300,
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -183,6 +242,7 @@ def discover_all_env_tools(
     Args:
         env_keys: List of environment keys (duplicates are deduplicated)
         api_key: Fleet API key
+        env_metadata: Per-env metadata with data_key/data_version
         cache_path: If set, load/save discovered tools to this JSON file
         ttl_seconds: TTL for provisioned Fleet instances
 
@@ -210,8 +270,11 @@ def discover_all_env_tools(
     if to_discover:
         print(f"Discovering tools for {len(to_discover)} environments...")
         for i, key in enumerate(to_discover, 1):
-            print(f"  [{i}/{len(to_discover)}] {key}...", end=" ", flush=True)
-            tools = discover_env_tools(key, api_key, ttl_seconds)
+            meta = env_metadata.get(key, {})
+            dk = meta.get("data_key")
+            dv = meta.get("data_version")
+            print(f"  [{i}/{len(to_discover)}] {key} (data={dk}:{dv})...", end=" ", flush=True)
+            tools = discover_env_tools(key, api_key, dk, dv, ttl_seconds)
             result[key] = tools
             tool_names = [t["function"]["name"] for t in tools if "function" in t]
             print(f"{len(tools)} tools: {tool_names[:5]}{'...' if len(tool_names) > 5 else ''}")
@@ -433,6 +496,14 @@ def build_task_gen_dataset_grpo(
     for env_key, env_tasks in sorted(tasks_by_env.items()):
         print(f"  {env_key}: {len(env_tasks)} tasks")
 
+    # Collect per-env metadata (data_key, data_version, env_variable_keys)
+    env_metadata = _collect_env_metadata(tasks_by_env)
+
+    print("\nEnvironment metadata:")
+    for env_key in sorted(env_metadata.keys()):
+        meta = env_metadata[env_key]
+        print(f"  {env_key}: data={meta['data_key']}:{meta['data_version']}, " f"env_vars={meta['env_variable_keys']}")
+
     # Discover tools from Fleet environments
     env_tools_map: Dict[str, List[Dict[str, Any]]] = {}
     if discover_tools:
@@ -444,6 +515,7 @@ def build_task_gen_dataset_grpo(
             env_tools_map = discover_all_env_tools(
                 env_keys=list(tasks_by_env.keys()),
                 api_key=api_key,
+                env_metadata=env_metadata,
                 cache_path=tools_cache,
             )
 
@@ -453,6 +525,8 @@ def build_task_gen_dataset_grpo(
     for env_key, env_tasks in tasks_by_env.items():
         tool_schemas = env_tools_map.get(env_key, [])
         tool_names = [t["function"]["name"] for t in tool_schemas if "function" in t]
+        meta = env_metadata.get(env_key, {})
+        env_var_keys = meta.get("env_variable_keys", [])
 
         for task in env_tasks:
             task_key = task.get("key") or task.get("task_key", "unknown")
@@ -471,6 +545,7 @@ def build_task_gen_dataset_grpo(
                 "env_version": task.get("version") or task.get("env_version", ""),
                 "env_tools": json.dumps(tool_names),
                 "env_tools_schema": json.dumps(tool_schemas),
+                "env_variable_keys": json.dumps(env_var_keys),
             }
             all_records.append(record)
 

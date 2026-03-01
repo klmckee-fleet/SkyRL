@@ -104,6 +104,16 @@ class TaskGenEnv(BaseTextEnv):
                 t["function"]["name"] for t in self.env_tools_schema if "function" in t and "name" in t["function"]
             ]
 
+        # Parse env_variable_keys (available context variables for this env)
+        env_var_keys_raw = extras.get("env_variable_keys", "[]")
+        if isinstance(env_var_keys_raw, str):
+            try:
+                self.env_variable_keys: List[str] = json.loads(env_var_keys_raw)
+            except json.JSONDecodeError:
+                self.env_variable_keys: List[str] = []
+        else:
+            self.env_variable_keys: List[str] = env_var_keys_raw or []
+
         # Verifier sandbox
         self.sandbox = VerifierSandbox(available_tools=set(self.env_tools) if self.env_tools else None)
 
@@ -162,6 +172,13 @@ class TaskGenEnv(BaseTextEnv):
             parts.append("\n".join(f"- {t}" for t in self.env_tools))
         else:
             parts.append("No tools discovered for this environment.")
+
+        # Environment variables (user context available at task runtime)
+        if self.env_variable_keys:
+            parts.append("\n### Environment Variables")
+            parts.append("These context variables are set at task runtime and can be referenced in prompts/verifiers:")
+            for var_key in self.env_variable_keys:
+                parts.append(f"- {var_key}")
 
         # --- B. Priors (concise, static, same for all envs) ---
         parts.append(
