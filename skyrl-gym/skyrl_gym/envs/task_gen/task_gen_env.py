@@ -71,7 +71,7 @@ class TaskGenEnv(BaseTextEnv):
         # Evaluator configuration
         self.evaluator_url = env_config.get("evaluator_url")
         self.k_rollouts = env_config.get("k_rollouts", 4)
-        self.models = env_config.get("models", ["claude-sonnet-4.5"])
+        self.models = env_config.get("models", ["anthropic/claude-sonnet-4.5"])
         self.api_key = env_config.get("api_key") or os.environ.get("FLEET_API_KEY")
 
         # Environment context from dataset (extras)

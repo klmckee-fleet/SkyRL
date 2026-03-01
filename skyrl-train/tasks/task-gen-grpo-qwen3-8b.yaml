@@ -46,8 +46,8 @@ envs:
   MODALITY: "tool_use"
   # Single-turn: one task generation per episode
   MAX_TURNS: 1
-  MAX_INPUT_LENGTH: 8192
-  MAX_GENERATE_LENGTH: 8192
+  MAX_INPUT_LENGTH: 4096
+  MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 20
   RUN_ID: ""
   MAX_TASKS: ""
@@ -61,7 +61,7 @@ envs:
   # Task-gen env config
   TASK_GEN_ALPHA: "0.5"
   TASK_GEN_K_ROLLOUTS: "4"
-  TASK_GEN_MODELS: "claude-sonnet-4.5,claude-opus-4.5"
+  TASK_GEN_MODELS: "anthropic/claude-sonnet-4.5,anthropic/claude-opus-4.5"
 
 setup: |
   set -euo pipefail
