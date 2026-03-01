@@ -126,11 +126,7 @@ class VerifierSandbox:
         # 6. Check for hardcoded return values
         self._check_hardcoded_returns(tree, result)
 
-        # 7. Check tool references if tools are known
-        if self.available_tools:
-            self._check_tool_references(verifier_code, result)
-
-        # 8. Check prompt length bounds (if prompt provided)
+        # 7. Check prompt length bounds (if prompt provided)
         if prompt is not None:
             self._check_prompt_bounds(prompt, result)
 
@@ -268,21 +264,6 @@ class VerifierSandbox:
             result.error = "Verifier always returns a constant value"
         else:
             result.checks_passed.append("return_logic")
-
-    def _check_tool_references(self, code: str, result: ValidationResult):
-        """Check that verifier references at least one known tool."""
-        # Look for tool name strings in the code
-        found_tools = set()
-        for tool in self.available_tools:
-            # Check for tool name as string literal or attribute
-            if tool in code:
-                found_tools.add(tool)
-
-        if found_tools:
-            result.checks_passed.append("tool_references")
-        else:
-            result.checks_failed.append("tool_references")
-            result.error = "Verifier does not reference any known environment tools"
 
     def _check_prompt_bounds(self, prompt: str, result: ValidationResult):
         """Check that prompt is within reasonable length bounds."""
