@@ -459,6 +459,7 @@ def build_task_gen_dataset_grpo(
     discover_tools: bool = True,
     tools_cache: Optional[str] = None,
     api_key: Optional[str] = None,
+    env_keys_filter: Optional[List[str]] = None,
 ):
     """Build GRPO dataset from existing Fleet tasks.
 
@@ -479,14 +480,11 @@ def build_task_gen_dataset_grpo(
         discover_tools: If True, provision Fleet envs to discover tools
         tools_cache: Path to JSON cache file for discovered tools
         api_key: Fleet API key (required if discover_tools=True)
+        env_keys_filter: If set, only include these environment keys
     """
     print(f"Loading tasks from {tasks_json}...")
     tasks = load_tasks(tasks_json)
     print(f"Loaded {len(tasks)} tasks")
-
-    if max_tasks and len(tasks) > max_tasks:
-        tasks = tasks[:max_tasks]
-        print(f"Truncated to {max_tasks} tasks")
 
     # Filter: must have verifier code (so we know the env produces real tasks)
     tasks_with_verifier = []
@@ -495,6 +493,20 @@ def build_task_gen_dataset_grpo(
         if verifier and len(verifier) >= min_verifier_len:
             tasks_with_verifier.append(t)
     print(f"Tasks with verifier (>= {min_verifier_len} chars): {len(tasks_with_verifier)}")
+
+    # Filter by env_keys if specified (before max_tasks truncation)
+    if env_keys_filter:
+        allowed = set(env_keys_filter)
+        before = len(tasks_with_verifier)
+        tasks_with_verifier = [
+            t for t in tasks_with_verifier if (t.get("env_key") or t.get("env_id") or "unknown") in allowed
+        ]
+        print(f"Filtered to env_keys={env_keys_filter}: {before} -> {len(tasks_with_verifier)} tasks")
+
+    # Truncate after filtering
+    if max_tasks and len(tasks_with_verifier) > max_tasks:
+        tasks_with_verifier = tasks_with_verifier[:max_tasks]
+        print(f"Truncated to {max_tasks} tasks")
 
     # Group by environment
     tasks_by_env: Dict[str, List[Dict]] = defaultdict(list)
@@ -553,6 +565,8 @@ def build_task_gen_dataset_grpo(
                 "task_key": task_key,
                 "env_key": env_key,
                 "env_version": task.get("version") or task.get("env_version", ""),
+                "data_key": task.get("data_key") or "",
+                "data_version": task.get("data_version") or "",
                 "env_tools": json.dumps(tool_names),
                 "env_tools_schema": json.dumps(tool_schemas),
                 "env_variable_keys": json.dumps(env_var_keys),
@@ -655,6 +669,12 @@ def main():
         help="Maximum number of tasks to include (for testing)",
     )
     parser.add_argument(
+        "--env-keys",
+        type=str,
+        default=None,
+        help="Comma-separated environment filter (e.g., ticketmaster,booking)",
+    )
+    parser.add_argument(
         "--no-discover-tools",
         action="store_true",
         help="Skip Fleet provisioning for tool discovery (local testing)",
@@ -668,6 +688,8 @@ def main():
 
     args = parser.parse_args()
 
+    env_keys_filter = [k.strip() for k in args.env_keys.split(",")] if args.env_keys else None
+
     if args.mode == "grpo":
         build_task_gen_dataset_grpo(
             tasks_json=args.tasks_json,
@@ -677,6 +699,7 @@ def main():
             max_tasks=args.max_tasks,
             discover_tools=not args.no_discover_tools,
             tools_cache=args.tools_cache,
+            env_keys_filter=env_keys_filter,
         )
     else:
         build_task_gen_dataset_sft(

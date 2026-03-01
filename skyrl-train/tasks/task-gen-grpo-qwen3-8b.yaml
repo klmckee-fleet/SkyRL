@@ -51,6 +51,7 @@ envs:
   NUM_EPOCHS: 20
   RUN_ID: ""
   MAX_TASKS: ""
+  ENV_KEYS: ""
   AWS_ACCESS_KEY_ID: ""
   AWS_SECRET_ACCESS_KEY: ""
   AWS_REGION: "us-east-1"
@@ -94,6 +95,7 @@ setup: |
   TOOLS_CACHE="$HOME/data/fleet/tools_cache.json"
   PREPARE_CMD="uv run python -m integrations.fleet.prepare_task_gen_dataset --tasks-json $TASKS_FILE --output-dir $DATA_DIR --mode grpo --tools-cache $TOOLS_CACHE"
   [ -n "${MAX_TASKS:-}" ] && PREPARE_CMD="$PREPARE_CMD --max-tasks $MAX_TASKS"
+  [ -n "${ENV_KEYS:-}" ] && PREPARE_CMD="$PREPARE_CMD --env-keys $ENV_KEYS"
   eval "$PREPARE_CMD"
 
 run: |

@@ -77,6 +77,8 @@ class TaskGenEnv(BaseTextEnv):
         # Environment context from dataset (extras)
         self.env_key = extras.get("env_key", "unknown")
         self.env_version = extras.get("env_version", "")
+        self.data_key = extras.get("data_key", "")
+        self.data_version = extras.get("data_version", "")
 
         # Parse env_tools_schema (full tool schemas for prompt building)
         env_tools_schema_raw = extras.get("env_tools_schema", "[]")
@@ -300,6 +302,8 @@ Generate exactly ONE task. Output it in this format:
                 verifier_code=verifier,
                 env_key=self.env_key,
                 env_version=self.env_version,
+                data_key=self.data_key or None,
+                data_version=self.data_version or None,
             )
         except Exception as e:
             logger.error(f"Evaluation failed for env={self.env_key}: {e}")
