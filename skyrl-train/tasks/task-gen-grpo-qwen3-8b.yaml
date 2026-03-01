@@ -12,7 +12,7 @@
 name: task-gen-grpo-qwen3-8b
 
 resources:
-  disk_size: 256
+  disk_size: 512
   ports: 6479
   memory: 350+
   any_of:
