@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 class TaskGenEnv(BaseTextEnv):
     """Environment for RL-based task generation.
 
-    The LLM (task generator policy) receives environment context (tool list,
-    schema, example tasks) and must output a task specification consisting of
-    a prompt and verifier function.
+    The LLM (task generator policy) receives environment context (tool schemas,
+    priors on verifier/task quality) and must output a task specification
+    consisting of a prompt and verifier function.
 
     This is a single-turn environment: one generation = one task = one episode.
     The reward comes from evaluating the generated task via Fleet rollouts.
@@ -51,9 +51,8 @@ class TaskGenEnv(BaseTextEnv):
     Constructor args (via extras, from dataset):
         env_key: Fleet environment key (e.g., "github", "booking-com")
         env_version: Fleet environment version
-        env_tools: List of available tool names in the environment
-        env_schema: Schema description for the environment
-        example_tasks: Example tasks for few-shot context
+        env_tools: JSON string of tool name list
+        env_tools_schema: JSON string of full OpenAI-format tool schemas
     """
 
     def __init__(
@@ -78,7 +77,18 @@ class TaskGenEnv(BaseTextEnv):
         # Environment context from dataset (extras)
         self.env_key = extras.get("env_key", "unknown")
         self.env_version = extras.get("env_version", "")
-        # env_tools may be a JSON string from parquet deserialization
+
+        # Parse env_tools_schema (full tool schemas for prompt building)
+        env_tools_schema_raw = extras.get("env_tools_schema", "[]")
+        if isinstance(env_tools_schema_raw, str):
+            try:
+                self.env_tools_schema: List[Dict[str, Any]] = json.loads(env_tools_schema_raw)
+            except json.JSONDecodeError:
+                self.env_tools_schema: List[Dict[str, Any]] = []
+        else:
+            self.env_tools_schema: List[Dict[str, Any]] = env_tools_schema_raw or []
+
+        # Parse env_tools (tool name list for sandbox validation)
         env_tools_raw = extras.get("env_tools", [])
         if isinstance(env_tools_raw, str):
             try:
@@ -87,8 +97,12 @@ class TaskGenEnv(BaseTextEnv):
                 self.env_tools: List[str] = []
         else:
             self.env_tools: List[str] = env_tools_raw or []
-        self.env_schema: str = extras.get("env_schema", "")
-        self.example_tasks: List[Dict[str, str]] = extras.get("example_tasks", [])
+
+        # If env_tools is empty but we have schemas, extract names from schemas
+        if not self.env_tools and self.env_tools_schema:
+            self.env_tools = [
+                t["function"]["name"] for t in self.env_tools_schema if "function" in t and "name" in t["function"]
+            ]
 
         # Verifier sandbox
         self.sandbox = VerifierSandbox(available_tools=set(self.env_tools) if self.env_tools else None)
@@ -111,54 +125,84 @@ class TaskGenEnv(BaseTextEnv):
                 logger.warning("TaskEvaluator not available. Install OpenEnv or set evaluator_url.")
         return self._evaluator
 
+    def _format_tool_schema(self, tool: Dict[str, Any]) -> str:
+        """Format a single tool schema for the system prompt."""
+        func = tool.get("function", {})
+        name = func.get("name", "unknown")
+        desc = func.get("description", "")
+        params = func.get("parameters", {})
+        properties = params.get("properties", {})
+        required = set(params.get("required", []))
+
+        lines = [f"**{name}**: {desc}"]
+        if properties:
+            lines.append("  Parameters:")
+            for pname, pschema in properties.items():
+                ptype = pschema.get("type", "any")
+                pdesc = pschema.get("description", "")
+                req_marker = " (required)" if pname in required else ""
+                lines.append(f"  - {pname} ({ptype}{req_marker}): {pdesc}")
+
+        return "\n".join(lines)
+
     def _build_system_prompt(self) -> str:
-        """Build the system prompt with environment context."""
-        tools_str = "\n".join(f"- {t}" for t in self.env_tools) if self.env_tools else "No tools listed."
+        """Build the system prompt with environment context and priors."""
+        parts = []
 
-        examples_str = ""
-        if self.example_tasks:
-            for i, ex in enumerate(self.example_tasks[:3], 1):
-                examples_str += f"\n### Example {i}\n"
-                examples_str += f"Prompt: {ex.get('prompt', '')}\n"
-                if ex.get("verifier"):
-                    examples_str += f"Verifier:\n```python\n{ex['verifier']}\n```\n"
+        parts.append(f'You are a task designer for the "{self.env_key}" environment.')
 
-        schema_str = self.env_schema if self.env_schema else "No schema available."
+        # --- A. Environment context (from tool discovery) ---
+        parts.append(f"\n## Environment: {self.env_key}")
+        parts.append("\n### Available Tools")
 
-        return f"""You are a task designer for the "{self.env_key}" environment. Your job is to create a task that an AI agent would need to solve using the available tools.
+        if self.env_tools_schema:
+            for tool in self.env_tools_schema:
+                parts.append(self._format_tool_schema(tool))
+        elif self.env_tools:
+            parts.append("\n".join(f"- {t}" for t in self.env_tools))
+        else:
+            parts.append("No tools discovered for this environment.")
 
-## Environment: {self.env_key}
+        # --- B. Priors (concise, static, same for all envs) ---
+        parts.append(
+            """
+## Verifier Guidelines
 
-### Available Tools
-{tools_str}
+- Signature: `async def verify(env, final_answer=None) -> float` returning 1.0 (pass) or 0.0 (fail)
+- Use `env` to call tools and check state — don't hardcode expected values
+- Must return 0.0 on a fresh environment (before agent acts)
+- Avoid underspecification: if the prompt says "find the designer in Mexico" but multiple designers exist, the verifier must accept all valid answers (or make the prompt specific enough to have one answer)
+- Avoid overspecification: don't prescribe exact tool call sequences in the prompt — specify WHAT, not HOW
 
-### Data Schema
-{schema_str}
+## Task Guidelines
 
-### Example Tasks
-{examples_str}
+- Write as a realistic user request with concrete parameters
+- Vary difficulty: some tasks need 1-2 tool calls, others 5-15+
+- Don't leak the answer in the prompt
+- Use the actual tool names and data entities from this environment
+- Prioritize structural complexity — tasks requiring genuine multi-step reasoning, not tasks exploiting a specific model's blind spot
+- Prioritize environment fidelity — tasks that reflect real software workflows so skills transfer to real-world use
+- Prioritize diverse coverage — broad tool/workflow coverage rather than deep exploitation of a few failure modes"""
+        )
 
-## Your Output Format
+        # --- C. Output format ---
+        parts.append(
+            """
+## Output Format
 
 Generate exactly ONE task. Output it in this format:
 
 <task>
 <prompt>
-[Natural language task instruction for the agent. Be specific about what needs to be done, but don't prescribe exact tool calls. Write as a realistic user request.]
+[Natural language task instruction for the agent. Be specific about what needs to be done.]
 </prompt>
 <verifier>
-[Python async function that checks if the task was completed correctly. Must be `async def verify(env, final_answer=None):` and return 1.0 for success, 0.0 for failure. Use env to query the environment state after the agent acts.]
+[Python async function: async def verify(env, final_answer=None) -> float]
 </verifier>
-</task>
+</task>"""
+        )
 
-## Guidelines
-- Tasks should be realistic — something a real user would ask
-- Verifiers must check observable state changes, not just echo the prompt
-- The verifier must return 0.0 on a fresh environment (before any agent actions)
-- Use the actual tool names and data entities from this environment
-- Vary difficulty: some tasks should need 1-2 tool calls, others 5-15+
-- Don't hardcode expected values that mirror the prompt
-- Verifiers should check end-state thoroughly enough that a model can't appear to succeed without actually completing the task"""
+        return "\n".join(parts)
 
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
@@ -215,7 +259,7 @@ Generate exactly ONE task. Output it in this format:
                 metadata=metadata,
             )
 
-        # 3. Run evaluation (inner loop) — k rollouts × m models
+        # 3. Run evaluation (inner loop) — k rollouts x m models
         evaluator = self._get_evaluator()
         if evaluator is None:
             # No evaluator available — return validity-only reward
@@ -333,7 +377,6 @@ Generate exactly ONE task. Output it in this format:
             "env_key": self.env_key,
             "env_version": self.env_version,
             "num_tools": len(self.env_tools),
-            "num_examples": len(self.example_tasks),
         }
 
         return conversation, metadata

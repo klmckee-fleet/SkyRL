@@ -5,11 +5,20 @@ Supports two modes:
     --mode sft:  (env_context, task_spec) pairs for supervised fine-tuning
     --mode grpo: Prompt-only records (env contexts) for GRPO reinforcement learning
 
+GRPO mode discovers tools from live Fleet environments via OpenEnv's
+FleetEnvClient + FleetMCPTools, so the system prompt contains real tool
+schemas instead of empty placeholders.
+
 Usage:
-    # GRPO (default): prompts only, reward comes from inner-loop rollouts
+    # GRPO with tool discovery (requires FLEET_API_KEY)
     python -m integrations.fleet.prepare_task_gen_dataset \
         --tasks-json ~/data/fleet/all_tool_use.json \
         --output-dir ./data/task_gen --mode grpo
+
+    # GRPO without tool discovery (local testing)
+    python -m integrations.fleet.prepare_task_gen_dataset \
+        --tasks-json ~/data/fleet/all_tool_use.json \
+        --output-dir ./data/task_gen --mode grpo --no-discover-tools
 
     # SFT: supervised pairs with response
     python -m integrations.fleet.prepare_task_gen_dataset \
@@ -18,12 +27,17 @@ Usage:
 """
 
 import argparse
+import asyncio
+import hashlib
 import json
+import logging
 import os
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from datasets import Dataset
+
+logger = logging.getLogger(__name__)
 
 
 def load_tasks(json_path: str) -> List[Dict[str, Any]]:
@@ -117,6 +131,104 @@ Generate exactly ONE task with a prompt and verifier function.
 <prompt>[Task instruction]</prompt>
 <verifier>[Python async verify function]</verifier>
 </task>"""
+
+
+# ---------------------------------------------------------------------------
+# Tool discovery via OpenEnv (Fleet provisioning)
+# ---------------------------------------------------------------------------
+
+
+async def _discover_env_tools_async(env_key: str, api_key: str, ttl_seconds: int = 300) -> List[Dict[str, Any]]:
+    """Provision a short-lived Fleet environment and list its tools.
+
+    Uses OpenEnv's FleetEnvClient.from_fleet() (sync provisioning) then
+    FleetMCPTools.list_tools() (async MCP call) to get tool schemas in
+    OpenAI format.
+
+    Returns list of tool dicts: [{"type": "function", "function": {...}}, ...]
+    """
+    from envs.fleet_env.client import FleetEnvClient
+
+    orch, tools_client = FleetEnvClient.from_fleet(api_key=api_key, env_key=env_key, ttl_seconds=ttl_seconds)
+    try:
+        result = await tools_client.list_tools()
+        return result.tools
+    finally:
+        try:
+            orch.close()
+        except Exception as e:
+            logger.warning(f"[{env_key}] Error closing environment: {e}")
+
+
+def discover_env_tools(env_key: str, api_key: str, ttl_seconds: int = 300) -> List[Dict[str, Any]]:
+    """Sync wrapper: provision Fleet env → list_tools() → destroy.
+
+    Returns tool schemas in OpenAI format, or empty list on failure.
+    """
+    try:
+        return asyncio.run(_discover_env_tools_async(env_key, api_key, ttl_seconds))
+    except Exception as e:
+        logger.error(f"[{env_key}] Tool discovery failed: {e}")
+        return []
+
+
+def discover_all_env_tools(
+    env_keys: List[str],
+    api_key: str,
+    cache_path: Optional[str] = None,
+    ttl_seconds: int = 300,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Discover tools for all unique env_keys, with optional JSON cache.
+
+    Args:
+        env_keys: List of environment keys (duplicates are deduplicated)
+        api_key: Fleet API key
+        cache_path: If set, load/save discovered tools to this JSON file
+        ttl_seconds: TTL for provisioned Fleet instances
+
+    Returns:
+        Dict mapping env_key -> list of OpenAI-format tool dicts
+    """
+    unique_keys = sorted(set(env_keys))
+
+    # Load cache if available
+    cached: Dict[str, List[Dict[str, Any]]] = {}
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path) as f:
+            cached = json.load(f)
+        print(f"Loaded tool cache with {len(cached)} environments from {cache_path}")
+
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    to_discover = []
+
+    for key in unique_keys:
+        if key in cached:
+            result[key] = cached[key]
+        else:
+            to_discover.append(key)
+
+    if to_discover:
+        print(f"Discovering tools for {len(to_discover)} environments...")
+        for i, key in enumerate(to_discover, 1):
+            print(f"  [{i}/{len(to_discover)}] {key}...", end=" ", flush=True)
+            tools = discover_env_tools(key, api_key, ttl_seconds)
+            result[key] = tools
+            tool_names = [t["function"]["name"] for t in tools if "function" in t]
+            print(f"{len(tools)} tools: {tool_names[:5]}{'...' if len(tool_names) > 5 else ''}")
+
+    # Save cache
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"Saved tool cache to {cache_path}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Dataset builders
+# ---------------------------------------------------------------------------
 
 
 def build_task_gen_dataset_sft(
@@ -226,8 +338,6 @@ def build_task_gen_dataset_sft(
     print(f"\nTotal records: {len(all_records)}")
 
     # Split into train/eval
-    import hashlib
-
     train_records = []
     eval_records = []
 
@@ -270,11 +380,12 @@ def build_task_gen_dataset_sft(
 def build_task_gen_dataset_grpo(
     tasks_json: str,
     output_dir: str,
-    env_context_dir: Optional[str] = None,
     eval_ratio: float = 0.15,
     min_verifier_len: int = 50,
-    max_examples_per_env: int = 3,
     max_tasks: Optional[int] = None,
+    discover_tools: bool = True,
+    tools_cache: Optional[str] = None,
+    api_key: Optional[str] = None,
 ):
     """Build GRPO dataset from existing Fleet tasks.
 
@@ -282,16 +393,19 @@ def build_task_gen_dataset_grpo(
     (system + user messages) but no response. The reward comes from inner-loop
     rollouts during GRPO training.
 
-    Records include env_key, env_tools, env_version as extras for TaskGenEnv.
+    When discover_tools=True, provisions each Fleet environment to discover
+    real tool schemas via MCP. These are stored as env_tools_schema (full
+    OpenAI-format JSON) and env_tools (tool name list) in each record.
 
     Args:
         tasks_json: Path to Fleet tasks JSON
         output_dir: Output directory for parquet files
-        env_context_dir: Directory with per-env context configs
         eval_ratio: Fraction for evaluation split
         min_verifier_len: Minimum verifier code length to include
-        max_examples_per_env: Number of example tasks to include in prompt
         max_tasks: Maximum total tasks to include (for testing)
+        discover_tools: If True, provision Fleet envs to discover tools
+        tools_cache: Path to JSON cache file for discovered tools
+        api_key: Fleet API key (required if discover_tools=True)
     """
     print(f"Loading tasks from {tasks_json}...")
     tasks = load_tasks(tasks_json)
@@ -319,42 +433,32 @@ def build_task_gen_dataset_grpo(
     for env_key, env_tasks in sorted(tasks_by_env.items()):
         print(f"  {env_key}: {len(env_tasks)} tasks")
 
+    # Discover tools from Fleet environments
+    env_tools_map: Dict[str, List[Dict[str, Any]]] = {}
+    if discover_tools:
+        if not api_key:
+            api_key = os.environ.get("FLEET_API_KEY")
+        if not api_key:
+            print("WARNING: No FLEET_API_KEY set, skipping tool discovery")
+        else:
+            env_tools_map = discover_all_env_tools(
+                env_keys=list(tasks_by_env.keys()),
+                api_key=api_key,
+                cache_path=tools_cache,
+            )
+
     # Build GRPO records: one prompt per task (prompt-only, no response)
-    # Each task becomes one record with the same env context prompt.
-    # The model generates a *new* task each time — reward from inner-loop rollouts.
     all_records = []
 
     for env_key, env_tasks in tasks_by_env.items():
-        # Load env context if available
-        env_ctx = None
-        if env_context_dir:
-            env_ctx = load_env_context(env_context_dir, env_key)
+        tool_schemas = env_tools_map.get(env_key, [])
+        tool_names = [t["function"]["name"] for t in tool_schemas if "function" in t]
 
-        tools = []
-        if env_ctx:
-            tools = env_ctx.get("tools", [])
-
-        # Use first N tasks as few-shot examples in prompt
-        example_tasks = env_tasks[:max_examples_per_env]
-        target_tasks = env_tasks[max_examples_per_env:]
-
-        if not target_tasks:
-            target_tasks = env_tasks
-
-        example_dicts = [{"prompt": t.get("prompt", "")} for t in example_tasks]
-
-        system_prompt = format_env_context_prompt(
-            env_key=env_key,
-            tools=tools,
-            schema=env_ctx.get("schema", "") if env_ctx else "",
-            example_tasks=example_dicts,
-        )
-
-        for task in target_tasks:
+        for task in env_tasks:
             task_key = task.get("key") or task.get("task_key", "unknown")
             record = {
                 "prompt": [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": ""},  # built at runtime by TaskGenEnv
                     {
                         "role": "user",
                         "content": f"Generate a task for the {env_key} environment.",
@@ -365,15 +469,22 @@ def build_task_gen_dataset_grpo(
                 "task_key": task_key,
                 "env_key": env_key,
                 "env_version": task.get("version") or task.get("env_version", ""),
-                "env_tools": json.dumps(tools),
+                "env_tools": json.dumps(tool_names),
+                "env_tools_schema": json.dumps(tool_schemas),
             }
             all_records.append(record)
 
     print(f"\nTotal GRPO records: {len(all_records)}")
 
-    # Split into train/eval
-    import hashlib
+    # Print tool discovery summary
+    if env_tools_map:
+        print("\nTool discovery summary:")
+        for env_key in sorted(env_tools_map.keys()):
+            schemas = env_tools_map[env_key]
+            names = [t["function"]["name"] for t in schemas if "function" in t]
+            print(f"  {env_key}: {len(names)} tools")
 
+    # Split into train/eval
     train_records = []
     eval_records = []
 
@@ -458,6 +569,17 @@ def main():
         default=None,
         help="Maximum number of tasks to include (for testing)",
     )
+    parser.add_argument(
+        "--no-discover-tools",
+        action="store_true",
+        help="Skip Fleet provisioning for tool discovery (local testing)",
+    )
+    parser.add_argument(
+        "--tools-cache",
+        type=str,
+        default=None,
+        help="JSON cache file for discovered tools (skip re-provisioning on re-runs)",
+    )
 
     args = parser.parse_args()
 
@@ -465,10 +587,11 @@ def main():
         build_task_gen_dataset_grpo(
             tasks_json=args.tasks_json,
             output_dir=args.output_dir,
-            env_context_dir=args.env_context_dir,
             eval_ratio=args.eval_ratio,
             min_verifier_len=args.min_verifier_len,
             max_tasks=args.max_tasks,
+            discover_tools=not args.no_discover_tools,
+            tools_cache=args.tools_cache,
         )
     else:
         build_task_gen_dataset_sft(
