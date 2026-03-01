@@ -189,6 +189,16 @@ def discover_env_tools(
     try:
         return asyncio.run(_discover_env_tools_async(env_key, api_key, data_key, data_version, ttl_seconds))
     except Exception as e:
+        if data_version:
+            logger.warning(
+                f"[{env_key}] Tool discovery failed with data_version={data_version}, "
+                f"retrying without version (tools don't change across versions): {e}"
+            )
+            try:
+                return asyncio.run(_discover_env_tools_async(env_key, api_key, data_key, None, ttl_seconds))
+            except Exception as e2:
+                logger.error(f"[{env_key}] Tool discovery failed on retry without version: {e2}")
+                return []
         logger.error(f"[{env_key}] Tool discovery failed: {e}")
         return []
 
