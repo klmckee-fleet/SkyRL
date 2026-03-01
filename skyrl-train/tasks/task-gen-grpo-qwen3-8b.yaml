@@ -14,21 +14,21 @@ name: task-gen-grpo-qwen3-8b
 resources:
   disk_size: 256
   ports: 6479
-  memory: 200+
+  memory: 350+
   any_of:
-    - accelerators: B200:1
+    - accelerators: B200:2
       cloud: lambda
-    - accelerators: B200:1
+    - accelerators: B200:2
       cloud: runpod
-    - accelerators: H200-SXM:1
+    - accelerators: H200-SXM:2
       cloud: lambda
-    - accelerators: H200-SXM:1
+    - accelerators: H200-SXM:2
       cloud: runpod
-    - accelerators: H200-SXM:1
+    - accelerators: H200-SXM:2
       cloud: vast
-    - accelerators: A100-80GB:1
+    - accelerators: A100-80GB:2
       cloud: lambda
-    - accelerators: A100-80GB:1
+    - accelerators: A100-80GB:2
       cloud: runpod
 
 num_nodes: 1
