@@ -287,6 +287,73 @@ class TestBuildGRPODataset:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Reward computation
+# ---------------------------------------------------------------------------
+
+
+class TestLearnability:
+    """Test compute_learnability uses strong model variance only."""
+
+    def test_uses_highest_solve_rate_model(self):
+        from integrations.fleet.task_gen_reward import compute_learnability
+
+        results = {
+            "claude-sonnet-4.5": [0.0, 0.0, 0.0, 0.0],  # weak: all fail, var=0
+            "claude-opus-4.5": [1.0, 0.0, 1.0, 0.0],  # strong: 50% solve, var=0.25 (max)
+        }
+        score = compute_learnability(results)
+        assert score == 1.0, f"Expected 1.0 (max learnability), got {score}"
+
+    def test_zero_when_strong_model_all_pass(self):
+        from integrations.fleet.task_gen_reward import compute_learnability
+
+        results = {
+            "claude-sonnet-4.5": [0.0, 0.0, 1.0, 0.0],  # some variance
+            "claude-opus-4.5": [1.0, 1.0, 1.0, 1.0],  # all pass = no variance
+        }
+        score = compute_learnability(results)
+        # Strong model (opus, highest solve rate=1.0) has var=0
+        assert score == 0.0, f"Expected 0.0 (no variance for strong), got {score}"
+
+    def test_single_model(self):
+        from integrations.fleet.task_gen_reward import compute_learnability
+
+        results = {"claude-sonnet-4.5": [1.0, 0.0, 1.0, 0.0]}
+        score = compute_learnability(results)
+        assert score == 1.0
+
+    def test_empty_results(self):
+        from integrations.fleet.task_gen_reward import compute_learnability
+
+        assert compute_learnability({}) == 0.0
+
+    def test_single_rollout_returns_zero(self):
+        from integrations.fleet.task_gen_reward import compute_learnability
+
+        results = {"model": [1.0]}
+        assert compute_learnability(results) == 0.0
+
+
+class TestSeparation:
+    """Test compute_separation computes gap between best and worst models."""
+
+    def test_separation_between_models(self):
+        from integrations.fleet.task_gen_reward import compute_separation
+
+        results = {
+            "claude-sonnet-4.5": [0.0, 0.0, 0.0, 0.0],  # 0% solve
+            "claude-opus-4.5": [1.0, 1.0, 1.0, 0.0],  # 75% solve
+        }
+        assert compute_separation(results) == 0.75
+
+    def test_no_separation_with_single_model(self):
+        from integrations.fleet.task_gen_reward import compute_separation
+
+        results = {"claude-sonnet-4.5": [1.0, 0.0, 1.0, 0.0]}
+        assert compute_separation(results) == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Tests: TaskGenEnv system prompt
 # ---------------------------------------------------------------------------
 
