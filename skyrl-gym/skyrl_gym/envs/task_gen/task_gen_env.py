@@ -4,12 +4,15 @@ Task Generation Environment for SkyRL.
 Single-turn BaseTextEnv where the LLM generates (prompt, verifier) for a Fleet
 environment. Reward:
 
-    R(task) = judge_gate * (variance + alpha * separation)
+    R(task) = judge_gate * (base_reward + variance + alpha * separation)
 
-    judge_gate:  Binary 0/1 from LLM-as-a-judge (is the task valid and coherent?)
-    variance:    Variance of verifier scores across k rollouts (difficulty calibration)
-    separation:  Performance gap between strong and weak models on the task
-    alpha:       Weight for separation term (default 0.5)
+    judge_gate:   Binary 0/1 from LLM-as-a-judge (is the task valid and coherent?)
+    base_reward:  Positive value awarded for passing the judge gate (default 0.1).
+                  Prevents cold-start: gives GRPO signal before evaluator returns
+                  non-zero variance/separation.
+    variance:     Variance of verifier scores across k rollouts (difficulty calibration)
+    separation:   Performance gap between strong and weak models on the task
+    alpha:        Weight for separation term (default 0.5)
 
 The evaluator runs generated tasks through Fleet harness with multiple models
 to compute variance and separation.
@@ -53,7 +56,7 @@ class TaskGenEnv(BaseTextEnv):
     The LLM generates (prompt, verifier) pairs for Fleet environments.
     Single-turn: one generation = one task = one episode.
 
-    Reward = judge_gate * (variance + alpha * separation)
+    Reward = judge_gate * (base_reward + variance + alpha * separation)
 
     Constructor args (via extras, from dataset):
         env_key, env_version, data_key, data_version
@@ -64,6 +67,7 @@ class TaskGenEnv(BaseTextEnv):
         evaluator_models: List of Fleet model IDs for rollout evaluation
         k_rollouts: Number of rollouts per model (default 4)
         alpha: Weight for separation term (default 0.5)
+        base_reward: Reward for passing the judge gate (default 0.1)
         max_eval_steps: Max agent steps per evaluation session (default 30)
         evaluator_timeout: Max seconds to wait for evaluation job (default 600)
     """
@@ -127,6 +131,7 @@ class TaskGenEnv(BaseTextEnv):
         # --- Evaluator and judge config (from env_config) ---
         self.judge_model = str(env_config.get("judge_model", "")) if env_config else ""
         self.alpha = float(env_config.get("alpha", 0.5)) if env_config else 0.5
+        self.base_reward = float(env_config.get("base_reward", 0.1)) if env_config else 0.1
         self.k_rollouts = int(env_config.get("k_rollouts", 4)) if env_config else 4
         self.max_eval_steps = int(env_config.get("max_eval_steps", 30)) if env_config else 30
         self.evaluator_timeout = int(env_config.get("evaluator_timeout", 600)) if env_config else 600
@@ -392,14 +397,14 @@ Generate exactly ONE task. Output it in this format:
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
 
-        Reward = judge_gate * (variance + alpha * separation)
+        Reward = judge_gate * (base_reward + variance + alpha * separation)
 
         Pipeline:
             1. Parse output → fail = reward 0
             2. Sandbox validation → fail = reward 0
             3. LLM-as-a-judge → gate (0/1)
             4. Fleet evaluator → variance + separation
-            5. Reward = gate * (variance + alpha * separation)
+            5. Reward = gate * (base_reward + variance + alpha * separation)
         """
         self.turns += 1
         metadata: Dict[str, Any] = {"env_key": self.env_key}
@@ -441,11 +446,12 @@ Generate exactly ONE task. Output it in this format:
 
         variance = eval_result["variance"]
         separation = eval_result["separation"]
-        reward = variance + self.alpha * separation
+        reward = self.base_reward + variance + self.alpha * separation
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
             "judge": judge_gate,
+            "base_reward": self.base_reward,
             "variance": variance,
             "separation": separation,
             "alpha": self.alpha,
