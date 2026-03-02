@@ -138,8 +138,6 @@ run: |
   uv run --isolated --extra "$INFERENCE_BACKEND" \
     --with "litellm>=1.75.5" \
     --with "boto3" \
-    --with "fleet-python" \
-    --with "git+https://github.com/fleet-ai/OpenEnv.git@deniz/task-scaling" \
     -m integrations.fleet.entrypoints.main_task_gen \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/validation.parquet']" \
