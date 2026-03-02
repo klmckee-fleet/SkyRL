@@ -462,6 +462,11 @@ Generate exactly ONE task. Output it in this format:
         """
         system_prompt = self._build_system_prompt()
 
+        logger.info(
+            f"[{self.env_key}] System prompt ({len(system_prompt)} chars, "
+            f"{len(self.env_tools)} tools):\n{system_prompt}"
+        )
+
         # Build the initial conversation
         conversation = [
             {"role": "system", "content": system_prompt},
