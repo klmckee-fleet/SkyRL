@@ -59,6 +59,7 @@ envs:
   EVALUATOR_MODELS: '["anthropic/claude-sonnet-4.5"]'
   K_ROLLOUTS: 4
   ALPHA: "0.5"
+  BASE_REWARD: "0.1"
   MAX_EVAL_STEPS: 30
   # AWS / S3
   AWS_ACCESS_KEY_ID: ""
@@ -193,5 +194,6 @@ run: |
     ++environment.skyrl_gym.task_gen.evaluator_models="$EVALUATOR_MODELS" \
     ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
     ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
+    ++environment.skyrl_gym.task_gen.base_reward=$BASE_REWARD \
     ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS \
     ++environment.skyrl_gym.task_gen.evaluator_timeout=600

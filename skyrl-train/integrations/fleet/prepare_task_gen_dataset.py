@@ -558,6 +558,23 @@ def build_task_gen_dataset_grpo(
                 cache_path=tools_cache,
             )
 
+    # Filter out environments with no usable API tools (model can't generate
+    # valid tasks without knowing what tools are available).
+    # "computer" is the CUA tool and not useful for task-gen prompts.
+    if discover_tools and env_tools_map:
+        empty_envs = []
+        for k in list(tasks_by_env.keys()):
+            schemas = env_tools_map.get(k, [])
+            api_names = [
+                t["function"]["name"] for t in schemas if "function" in t and t["function"]["name"] != "computer"
+            ]
+            if not api_names:
+                empty_envs.append(k)
+        if empty_envs:
+            print(f"\nSkipping {len(empty_envs)} envs with no API tools: {empty_envs}")
+            for k in empty_envs:
+                del tasks_by_env[k]
+
     # Build GRPO records: one prompt per task (prompt-only, no response)
     all_records = []
 
