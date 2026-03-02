@@ -55,7 +55,7 @@ envs:
   MAX_TASKS: ""
   ENV_KEYS: ""
   # Evaluator config
-  JUDGE_MODEL: "claude-haiku-4-5-20251001"
+  JUDGE_MODEL: "anthropic/claude-haiku-4.5"
   EVALUATOR_MODELS: '["anthropic/claude-sonnet-4.5"]'
   K_ROLLOUTS: 4
   ALPHA: "0.5"
