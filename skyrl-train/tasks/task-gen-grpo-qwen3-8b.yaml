@@ -54,6 +54,7 @@ envs:
   RUN_ID: ""
   MAX_TASKS: ""
   ENV_KEYS: ""
+  EVAL_RATIO: "0.005"
   # Evaluator config
   JUDGE_MODEL: "anthropic/claude-sonnet-4-6"
   EVALUATOR_MODELS: '["anthropic/claude-sonnet-4.5"]'
@@ -102,6 +103,7 @@ setup: |
   PREPARE_CMD="uv run python -m integrations.fleet.prepare_task_gen_dataset --tasks-json $TASKS_FILE --output-dir $DATA_DIR --mode grpo --tools-cache $TOOLS_CACHE"
   [ -n "${MAX_TASKS:-}" ] && PREPARE_CMD="$PREPARE_CMD --max-tasks $MAX_TASKS"
   [ -n "${ENV_KEYS:-}" ] && PREPARE_CMD="$PREPARE_CMD --env-keys $ENV_KEYS"
+  [ -n "${EVAL_RATIO:-}" ] && PREPARE_CMD="$PREPARE_CMD --eval-ratio $EVAL_RATIO"
   eval "$PREPARE_CMD"
 
 run: |
