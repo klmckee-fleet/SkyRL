@@ -2,17 +2,25 @@
 Task Generation Environment for SkyRL.
 
 Single-turn BaseTextEnv where the LLM generates (prompt, verifier) for a Fleet
-environment. Reward is computed from validation quality:
+environment. Reward:
 
-    R(task) = validation_score  (graduated: 0.0 to 1.0 based on checks passed)
+    R(task) = judge_gate * (variance + alpha * separation)
 
-Phase 1: Validity-based reward (no inner-loop evaluation).
-Phase 2 (future): Add evaluator-based reward via Fleet harness rollouts.
+    judge_gate:  Binary 0/1 from LLM-as-a-judge (is the task valid and coherent?)
+    variance:    Variance of verifier scores across k rollouts (difficulty calibration)
+    separation:  Performance gap between strong and weak models on the task
+    alpha:       Weight for separation term (default 0.5)
+
+The evaluator runs generated tasks through Fleet harness with multiple models
+to compute variance and separation.
 """
 
+import asyncio
+import concurrent.futures
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 from omegaconf import DictConfig
 
@@ -29,24 +37,35 @@ from skyrl_gym.envs.task_gen.verifier_sandbox import (
 logger = logging.getLogger(__name__)
 
 
+def _run_async(coro):
+    """Run an async coroutine from sync code, even if an event loop is running."""
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 class TaskGenEnv(BaseTextEnv):
     """Environment for RL-based task generation.
 
-    The LLM (task generator policy) receives environment context (tool schemas,
-    priors on verifier/task quality) and must output a task specification
-    consisting of a prompt and verifier function.
+    The LLM generates (prompt, verifier) pairs for Fleet environments.
+    Single-turn: one generation = one task = one episode.
 
-    This is a single-turn environment: one generation = one task = one episode.
-
-    Phase 1: Reward comes from graduated validity scoring (sandbox checks).
-    Phase 2 (future): Add evaluator-based reward via Fleet harness rollouts.
+    Reward = judge_gate * (variance + alpha * separation)
 
     Constructor args (via extras, from dataset):
-        env_key: Fleet environment key (e.g., "github", "booking-com")
-        env_version: Fleet environment version
-        env_tools: JSON string of tool name list
-        env_tools_schema: JSON string of full OpenAI-format tool schemas
-        env_variable_keys: JSON string of available context variable names
+        env_key, env_version, data_key, data_version
+        env_tools, env_tools_schema, env_variable_keys
+
+    Constructor args (via env_config, from Hydra):
+        judge_model: Model ID for LLM-as-a-judge gate
+        evaluator_models: List of Fleet model IDs for rollout evaluation
+        k_rollouts: Number of rollouts per model (default 4)
+        alpha: Weight for separation term (default 0.5)
+        max_eval_steps: Max agent steps per evaluation session (default 30)
+        evaluator_timeout: Max seconds to wait for evaluation job (default 600)
     """
 
     def __init__(
@@ -104,6 +123,52 @@ class TaskGenEnv(BaseTextEnv):
         # Verifier sandbox — filters out CUA-only tool "computer" from available tools
         api_tools = set(self.env_tools) - {"computer"} if self.env_tools else None
         self.sandbox = VerifierSandbox(available_tools=api_tools if api_tools else None)
+
+        # --- Evaluator and judge config (from env_config) ---
+        self.judge_model = str(env_config.get("judge_model", "")) if env_config else ""
+        self.alpha = float(env_config.get("alpha", 0.5)) if env_config else 0.5
+        self.k_rollouts = int(env_config.get("k_rollouts", 4)) if env_config else 4
+        self.max_eval_steps = int(env_config.get("max_eval_steps", 30)) if env_config else 30
+        self.evaluator_timeout = int(env_config.get("evaluator_timeout", 600)) if env_config else 600
+
+        # Parse evaluator_models (list of Fleet model IDs)
+        eval_models_raw = env_config.get("evaluator_models", []) if env_config else []
+        if isinstance(eval_models_raw, str):
+            try:
+                self.evaluator_models: List[str] = json.loads(eval_models_raw)
+            except (json.JSONDecodeError, TypeError):
+                self.evaluator_models: List[str] = [eval_models_raw] if eval_models_raw else []
+        else:
+            self.evaluator_models: List[str] = list(eval_models_raw) if eval_models_raw else []
+
+        # API keys from environment
+        self.fleet_api_key = os.environ.get("FLEET_API_KEY", "")
+        self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY", "")
+
+        # Initialize evaluator if configured
+        self.evaluator = None
+        if self.evaluator_models and self.fleet_api_key:
+            try:
+                from envs.fleet_env.task_evaluator import TaskEvaluator
+
+                self.evaluator = TaskEvaluator(
+                    api_key=self.fleet_api_key,
+                    k_rollouts=self.k_rollouts,
+                    models=self.evaluator_models,
+                    max_steps=self.max_eval_steps,
+                    max_poll_time_s=self.evaluator_timeout,
+                )
+                logger.info(
+                    f"TaskEvaluator initialized: models={self.evaluator_models}, "
+                    f"k={self.k_rollouts}, max_steps={self.max_eval_steps}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to initialize TaskEvaluator: {e}")
+
+        logger.info(
+            f"TaskGenEnv: env={self.env_key}, judge={self.judge_model or 'none'}, "
+            f"evaluator={'enabled' if self.evaluator else 'disabled'}, alpha={self.alpha}"
+        )
 
     def _format_tool_schema(self, tool: Dict[str, Any]) -> str:
         """Format a single tool schema for the system prompt."""
@@ -216,18 +281,125 @@ Generate exactly ONE task. Output it in this format:
 
         return "\n".join(parts)
 
+    def _judge_task(self, prompt: str, verifier: str) -> float:
+        """LLM-as-a-judge gate: returns 0.0 (invalid) or 1.0 (valid).
+
+        Uses a fast model to check if the generated (prompt, verifier) pair
+        is valid and coherent. This is the binary gate in the reward formula.
+        """
+        if not self.judge_model or not self.openrouter_api_key:
+            return 1.0  # No judge configured, pass through
+
+        # Build concise tool list for context
+        tool_names = [t for t in self.env_tools if t != "computer"]
+        tools_str = ", ".join(tool_names[:20]) if tool_names else "none discovered"
+
+        judge_prompt = (
+            f'Evaluate this task for the "{self.env_key}" environment.\n\n'
+            f"Available tools: {tools_str}\n\n"
+            f"Task prompt:\n{prompt}\n\n"
+            f"Verifier code:\n```python\n{verifier}\n```\n\n"
+            "A valid task must:\n"
+            "1. Have a clear, specific prompt describing what an agent should do\n"
+            "2. Have a verifier that checks the correct outcome via the DB API "
+            '(env.db("seed"), env.db("current"), .table().eq().all())\n'
+            "3. The verifier must check what the prompt actually asks\n"
+            "4. The prompt must not leak the answer or expected values\n"
+            "5. The verifier must return 0.0 on a fresh env (before agent acts)\n\n"
+            "Answer with exactly one word: VALID or INVALID"
+        )
+
+        try:
+            import litellm
+
+            response = litellm.completion(
+                model=f"openrouter/{self.judge_model}",
+                messages=[{"role": "user", "content": judge_prompt}],
+                temperature=0,
+                max_tokens=10,
+                api_key=self.openrouter_api_key,
+            )
+            answer = response.choices[0].message.content.strip().upper()
+            is_valid = "VALID" in answer and "INVALID" not in answer
+            logger.info(f"LLM judge: {answer} -> {'VALID' if is_valid else 'INVALID'}")
+            return 1.0 if is_valid else 0.0
+        except Exception as e:
+            logger.warning(f"LLM judge failed, defaulting to valid: {e}")
+            return 1.0
+
+    def _evaluate_task(self, prompt: str, verifier: str) -> Dict[str, Any]:
+        """Run Fleet harness evaluation to compute variance and separation.
+
+        Submits the generated task to Fleet for k rollouts across m models.
+        Returns variance (within-model score variance) and separation
+        (performance gap between strongest and weakest model).
+        """
+        if not self.evaluator:
+            return {"variance": 0.0, "separation": 0.0, "scores": {}}
+
+        try:
+            result = _run_async(
+                self.evaluator.evaluate(
+                    prompt=prompt,
+                    verifier_code=verifier,
+                    env_key=self.env_key,
+                    env_version=self.env_version,
+                    data_key=self.data_key or None,
+                    data_version=self.data_version or None,
+                )
+            )
+
+            results_per_model = result.get("results_per_model", {})
+            all_scores = []
+            model_means = {}
+
+            for model_id, scores in results_per_model.items():
+                if scores:
+                    all_scores.extend(scores)
+                    model_means[model_id] = sum(scores) / len(scores)
+
+            # Variance across all rollouts (measures difficulty calibration)
+            if len(all_scores) > 1:
+                mean = sum(all_scores) / len(all_scores)
+                variance = sum((s - mean) ** 2 for s in all_scores) / len(all_scores)
+            else:
+                variance = 0.0
+
+            # Separation: max mean - min mean across models
+            if len(model_means) > 1:
+                separation = max(model_means.values()) - min(model_means.values())
+            else:
+                separation = 0.0
+
+            logger.info(
+                f"Evaluation: variance={variance:.4f}, separation={separation:.4f}, "
+                f"scores={results_per_model}, job={result.get('job_id')}"
+            )
+
+            return {
+                "variance": variance,
+                "separation": separation,
+                "scores": results_per_model,
+                "model_means": model_means,
+                "job_id": result.get("job_id"),
+                "num_sessions": result.get("num_rollouts", 0),
+                "num_errors": result.get("num_errors", 0),
+            }
+        except Exception as e:
+            logger.error(f"Evaluation failed: {e}")
+            return {"variance": 0.0, "separation": 0.0, "scores": {}, "error": str(e)}
+
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
 
-        Reward is a graduated validity score based on how many sandbox
-        checks pass. This gives GRPO signal even without inner-loop
-        evaluation (Phase 1).
+        Reward = judge_gate * (variance + alpha * separation)
 
-        Args:
-            action: LLM output containing <task><prompt>...</prompt><verifier>...</verifier></task>
-
-        Returns:
-            BaseTextEnvStepOutput with graduated validity reward.
+        Pipeline:
+            1. Parse output → fail = reward 0
+            2. Sandbox validation → fail = reward 0
+            3. LLM-as-a-judge → gate (0/1)
+            4. Fleet evaluator → variance + separation
+            5. Reward = gate * (variance + alpha * separation)
         """
         self.turns += 1
         metadata: Dict[str, Any] = {"env_key": self.env_key}
@@ -236,20 +408,15 @@ Generate exactly ONE task. Output it in this format:
         parsed = parse_task_output(action)
         if parsed is None:
             metadata["error"] = "parse_failed"
-            metadata["reward_breakdown"] = {"parse": 0.0, "total": 0.0}
-            return BaseTextEnvStepOutput(
-                observations=[],
-                reward=0.0,
-                done=True,
-                metadata=metadata,
-            )
+            metadata["reward_breakdown"] = {"total": 0.0}
+            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
         prompt = parsed["prompt"]
         verifier = parsed["verifier"]
         metadata["generated_prompt"] = prompt
         metadata["generated_verifier"] = verifier
 
-        # 2. Validate via sandbox — graduated score
+        # 2. Sandbox validation (fast pre-filter)
         validation = self.sandbox.validate(verifier, prompt)
         metadata["validation"] = {
             "valid": validation.valid,
@@ -257,27 +424,35 @@ Generate exactly ONE task. Output it in this format:
             "failed": validation.checks_failed,
             "error": validation.error,
         }
+        if not validation.valid:
+            metadata["reward_breakdown"] = {"sandbox": 0.0, "total": 0.0}
+            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
-        # Graduated reward: fraction of checks passed
-        # Parse success = 1 bonus check (we got past parse_task_output)
-        total_checks = len(validation.checks_passed) + len(validation.checks_failed) + 1
-        passed_checks = len(validation.checks_passed) + 1  # +1 for parse success
-        reward = passed_checks / total_checks
+        # 3. LLM-as-a-judge gate (binary 0/1)
+        judge_gate = self._judge_task(prompt, verifier)
+        metadata["judge_gate"] = judge_gate
+        if judge_gate == 0.0:
+            metadata["reward_breakdown"] = {"sandbox": 1.0, "judge": 0.0, "total": 0.0}
+            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
+
+        # 4. Fleet evaluator (variance + separation)
+        eval_result = self._evaluate_task(prompt, verifier)
+        metadata["evaluation"] = eval_result
+
+        variance = eval_result["variance"]
+        separation = eval_result["separation"]
+        reward = variance + self.alpha * separation
 
         metadata["reward_breakdown"] = {
-            "parse": 1.0,
-            "checks_passed": len(validation.checks_passed),
-            "checks_failed": len(validation.checks_failed),
-            "total_checks": total_checks,
+            "sandbox": 1.0,
+            "judge": judge_gate,
+            "variance": variance,
+            "separation": separation,
+            "alpha": self.alpha,
             "total": reward,
         }
 
-        return BaseTextEnvStepOutput(
-            observations=[],
-            reward=reward,
-            done=True,
-            metadata=metadata,
-        )
+        return BaseTextEnvStepOutput(observations=[], reward=reward, done=True, metadata=metadata)
 
     def init(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """Initialize the environment with env context as the prompt.
