@@ -397,14 +397,16 @@ Generate exactly ONE task. Output it in this format:
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
 
-        Reward = judge_gate * (base_reward + variance + alpha * separation)
+        Training reward = judge_gate * base_reward
+        (Fleet evaluator is too slow for per-step training — each evaluation
+        takes 5-10 min, causing GPU idle and NCCL timeouts. Evaluator runs
+        separately during periodic eval checkpoints.)
 
         Pipeline:
             1. Parse output → fail = reward 0
             2. Sandbox validation → fail = reward 0
             3. LLM-as-a-judge → gate (0/1)
-            4. Fleet evaluator → variance + separation
-            5. Reward = gate * (base_reward + variance + alpha * separation)
+            4. Reward = gate * base_reward
         """
         self.turns += 1
         metadata: Dict[str, Any] = {"env_key": self.env_key}
@@ -440,21 +442,13 @@ Generate exactly ONE task. Output it in this format:
             metadata["reward_breakdown"] = {"sandbox": 1.0, "judge": 0.0, "total": 0.0}
             return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
-        # 4. Fleet evaluator (variance + separation)
-        eval_result = self._evaluate_task(prompt, verifier)
-        metadata["evaluation"] = eval_result
-
-        variance = eval_result["variance"]
-        separation = eval_result["separation"]
-        reward = self.base_reward + variance + self.alpha * separation
+        # 4. Reward = judge_gate * base_reward
+        reward = self.base_reward
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
             "judge": judge_gate,
             "base_reward": self.base_reward,
-            "variance": variance,
-            "separation": separation,
-            "alpha": self.alpha,
             "total": reward,
         }
 
