@@ -11,7 +11,7 @@
 name: fleet-task-grpo-qwen3-vl-8b
 
 resources:
-  disk_size: 200
+  disk_size: 750
   ports: 6479
   any_of:
     # Prefer B200:4 (min 750GB RAM)
@@ -59,8 +59,8 @@ envs:
   S3_DATASET_BUCKET: "fleet-internal-datasets"
   S3_CHECKPOINT_BUCKET: "skyrl-checkpoints"
   S3_TRAJECTORY_BUCKET: "skyrl-trajectories"
-  # Dataset version: "v3" (20,557 tasks) or "v4" (15,193 tasks, recommended)
-  DATA_VERSION: "v4"
+  # Dataset version: "v3" (20,557 tasks), "v4" (15,193 tasks), "v5" (5,674 tasks, recommended)
+  DATA_VERSION: "v5"
 
 setup: |
   set -euo pipefail
