@@ -1,10 +1,10 @@
 # Task Generation GRPO Training via SkyPilot - Qwen3-8B
 # Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key> --env ANTHROPIC_API_KEY=<key>
 #
-# Reward: R(task) = judge_gate * (variance + alpha * separation)
+# Reward: R(task) = judge_gate * base_reward
 #   judge_gate:  LLM-as-a-judge binary gate (valid task? 0/1)
-#   variance:    Score variance across k rollouts (difficulty calibration)
-#   separation:  Performance gap between strong and weak models
+#   base_reward: Positive value for valid tasks (default 0.1)
+# Fleet evaluator (variance/separation) runs at periodic eval, not per-step.
 #
 # Model: Qwen/Qwen3-8B
 # GPUs: 4 (FSDP2 + Adam requires >80GB per GPU with 2 GPUs)
@@ -179,7 +179,7 @@ run: |
     generator.weight_sync_backend=nccl \
     generator.async_engine=true \
     generator.batched=false \
-    generator.trajectory_timeout_seconds=900 \
+    generator.trajectory_timeout_seconds=300 \
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
