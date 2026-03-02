@@ -154,7 +154,7 @@ run: |
     generator.inference_engine_tensor_parallel_size=1 \
     trainer.epochs=${NUM_EPOCHS} \
     trainer.eval_batch_size=4 \
-    trainer.eval_before_train=false \
+    trainer.eval_before_train=true \
     trainer.eval_interval=20 \
     trainer.update_epochs_per_batch=1 \
     trainer.train_batch_size=4 \
@@ -167,7 +167,7 @@ run: |
     trainer.max_prompt_length=$MAX_INPUT_LENGTH \
     generator.max_input_length=$MAX_INPUT_LENGTH \
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
-    generator.sampling_params.temperature=1.3 \
+    generator.sampling_params.temperature=1 \
     generator.sampling_params.top_p=0.95 \
     generator.sampling_params.stop='["</task>"]' \
     generator.eval_sampling_params.stop='["</task>"]' \
@@ -189,11 +189,4 @@ run: |
     trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
     trainer.resume_mode=latest \
     trainer.ckpt_path="$HOME/ckpts/task_gen" \
-    trainer.dump_data_batch=true \
-    ++environment.skyrl_gym.task_gen.judge_model="$JUDGE_MODEL" \
-    ++environment.skyrl_gym.task_gen.evaluator_models="$EVALUATOR_MODELS" \
-    ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
-    ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
-    ++environment.skyrl_gym.task_gen.base_reward=$BASE_REWARD \
-    ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS \
-    ++environment.skyrl_gym.task_gen.evaluator_timeout=600
+    trainer.dump_data_batch=true
