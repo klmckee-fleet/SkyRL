@@ -1,9 +1,10 @@
 # Task Generation GRPO Training via SkyPilot - Qwen3-8B
-# Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key>
+# Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key> --env ANTHROPIC_API_KEY=<key>
 #
-# This task trains GRPO on a task-generation environment. The LLM generates
-# (prompt, verifier) pairs for Fleet environments, and reward comes from
-# graduated validity scoring (Phase 1: sandbox checks, no inner-loop eval).
+# Reward: R(task) = judge_gate * (variance + alpha * separation)
+#   judge_gate:  LLM-as-a-judge binary gate (valid task? 0/1)
+#   variance:    Score variance across k rollouts (difficulty calibration)
+#   separation:  Performance gap between strong and weak models
 #
 # Model: Qwen/Qwen3-8B
 # GPUs: 4 (FSDP2 + Adam requires >80GB per GPU with 2 GPUs)
@@ -40,6 +41,7 @@ workdir:
 envs:
   WANDB_API_KEY: ""
   FLEET_API_KEY: ""
+  OPENROUTER_API_KEY: ""
   LOGGER: "wandb"
   INFERENCE_BACKEND: "vllm"
   DATA_VERSION: "v4"
@@ -52,6 +54,13 @@ envs:
   RUN_ID: ""
   MAX_TASKS: ""
   ENV_KEYS: ""
+  # Evaluator config
+  JUDGE_MODEL: "claude-haiku-4-5-20251001"
+  EVALUATOR_MODELS: '["anthropic/claude-sonnet-4.5"]'
+  K_ROLLOUTS: 4
+  ALPHA: "0.5"
+  MAX_EVAL_STEPS: 30
+  # AWS / S3
   AWS_ACCESS_KEY_ID: ""
   AWS_SECRET_ACCESS_KEY: ""
   AWS_REGION: "us-east-1"
@@ -128,6 +137,8 @@ run: |
   uv run --isolated --extra "$INFERENCE_BACKEND" \
     --with "litellm>=1.75.5" \
     --with "boto3" \
+    --with "fleet-python" \
+    --with "git+https://github.com/fleet-ai/OpenEnv.git@deniz/task-scaling" \
     -m integrations.fleet.entrypoints.main_task_gen \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/validation.parquet']" \
@@ -155,7 +166,7 @@ run: |
     trainer.max_prompt_length=$MAX_INPUT_LENGTH \
     generator.max_input_length=$MAX_INPUT_LENGTH \
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
-    generator.sampling_params.temperature=1.0 \
+    generator.sampling_params.temperature=1.3 \
     generator.sampling_params.top_p=0.95 \
     generator.sampling_params.stop='["</task>"]' \
     generator.eval_sampling_params.stop='["</task>"]' \
@@ -167,7 +178,7 @@ run: |
     generator.weight_sync_backend=nccl \
     generator.async_engine=true \
     generator.batched=false \
-    generator.trajectory_timeout_seconds=300 \
+    generator.trajectory_timeout_seconds=900 \
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
@@ -177,4 +188,10 @@ run: |
     trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
     trainer.resume_mode=latest \
     trainer.ckpt_path="$HOME/ckpts/task_gen" \
-    trainer.dump_data_batch=true
+    trainer.dump_data_batch=true \
+    ++environment.skyrl_gym.task_gen.judge_model="$JUDGE_MODEL" \
+    ++environment.skyrl_gym.task_gen.evaluator_models="$EVALUATOR_MODELS" \
+    ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
+    ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
+    ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS \
+    ++environment.skyrl_gym.task_gen.evaluator_timeout=600
