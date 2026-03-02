@@ -181,40 +181,23 @@ def discover_env_tools(
     data_key: Optional[str] = None,
     data_version: Optional[str] = None,
     ttl_seconds: int = 300,
-    timeout_seconds: int = 120,
 ) -> List[Dict[str, Any]]:
     """Sync wrapper: provision Fleet env → list_tools() → destroy.
 
     Returns tool schemas in OpenAI format, or empty list on failure.
-    Enforces a hard timeout per environment to prevent one broken env
-    from blocking the entire pipeline.
     """
-    import concurrent.futures
-
-    def _run(dk, dv):
-        return asyncio.run(_discover_env_tools_async(env_key, api_key, dk, dv, ttl_seconds))
-
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_run, data_key, data_version)
-            return future.result(timeout=timeout_seconds)
-    except concurrent.futures.TimeoutError:
-        logger.error(f"[{env_key}] Tool discovery timed out after {timeout_seconds}s")
-        return []
+        return asyncio.run(_discover_env_tools_async(env_key, api_key, data_key, data_version, ttl_seconds))
     except Exception as e:
         if data_version:
             logger.warning(
-                f"[{env_key}] Tool discovery failed (data_version={data_version}), retrying without version: {e}"
+                f"[{env_key}] Tool discovery failed with data_version={data_version}, "
+                f"retrying without version (tools don't change across versions): {e}"
             )
             try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(_run, data_key, None)
-                    return future.result(timeout=timeout_seconds)
-            except concurrent.futures.TimeoutError:
-                logger.error(f"[{env_key}] Tool discovery retry timed out after {timeout_seconds}s")
-                return []
+                return asyncio.run(_discover_env_tools_async(env_key, api_key, data_key, None, ttl_seconds))
             except Exception as e2:
-                logger.error(f"[{env_key}] Tool discovery failed on retry: {e2}")
+                logger.error(f"[{env_key}] Tool discovery failed on retry without version: {e2}")
                 return []
         logger.error(f"[{env_key}] Tool discovery failed: {e}")
         return []
@@ -557,23 +540,6 @@ def build_task_gen_dataset_grpo(
                 env_metadata=env_metadata,
                 cache_path=tools_cache,
             )
-
-    # Filter out environments with no usable API tools (model can't generate
-    # valid tasks without knowing what tools are available).
-    # "computer" is the CUA tool and not useful for task-gen prompts.
-    if discover_tools and env_tools_map:
-        empty_envs = []
-        for k in list(tasks_by_env.keys()):
-            schemas = env_tools_map.get(k, [])
-            api_names = [
-                t["function"]["name"] for t in schemas if "function" in t and t["function"]["name"] != "computer"
-            ]
-            if not api_names:
-                empty_envs.append(k)
-        if empty_envs:
-            print(f"\nSkipping {len(empty_envs)} envs with no API tools: {empty_envs}")
-            for k in empty_envs:
-                del tasks_by_env[k]
 
     # Build GRPO records: one prompt per task (prompt-only, no response)
     all_records = []
