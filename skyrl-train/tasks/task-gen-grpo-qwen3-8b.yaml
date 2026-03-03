@@ -194,7 +194,7 @@ run: |
     trainer.dump_data_batch=true \
     ++environment.skyrl_gym.task_gen.judge_model="$JUDGE_MODEL" \
     ++environment.skyrl_gym.task_gen.base_reward=$BASE_REWARD \
-    ++environment.skyrl_gym.task_gen.evaluator_models='$EVALUATOR_MODELS' \
+    ++environment.skyrl_gym.task_gen.evaluator_models="$EVALUATOR_MODELS" \
     ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
     ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
     ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS

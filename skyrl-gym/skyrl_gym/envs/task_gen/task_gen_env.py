@@ -118,11 +118,22 @@ class TaskGenEnv(BaseTextEnv):
         self.base_reward = float(env_config.get("base_reward", 0.1)) if env_config else 0.1
 
         # Evaluator config (from Hydra env_config)
-        evaluator_models_raw = str(env_config.get("evaluator_models", "[]")) if env_config else "[]"
-        try:
-            self.evaluator_models: List[str] = json.loads(evaluator_models_raw)
-        except (json.JSONDecodeError, TypeError):
-            self.evaluator_models: List[str] = []
+        # Hydra may pass evaluator_models as a ListConfig (from YAML list syntax)
+        # or as a JSON string. Handle both.
+        evaluator_models_raw = env_config.get("evaluator_models", []) if env_config else []
+        if isinstance(evaluator_models_raw, str):
+            try:
+                self.evaluator_models: List[str] = json.loads(evaluator_models_raw)
+            except (json.JSONDecodeError, TypeError):
+                self.evaluator_models: List[str] = []
+        elif isinstance(evaluator_models_raw, (list,)):
+            self.evaluator_models: List[str] = list(evaluator_models_raw)
+        else:
+            # OmegaConf ListConfig or other iterable
+            try:
+                self.evaluator_models: List[str] = list(evaluator_models_raw)
+            except TypeError:
+                self.evaluator_models: List[str] = []
         self.k_rollouts = int(env_config.get("k_rollouts", 4)) if env_config else 4
         self.alpha = float(env_config.get("alpha", 0.5)) if env_config else 0.5
         self.max_eval_steps = int(env_config.get("max_eval_steps", 30)) if env_config else 30
