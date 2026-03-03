@@ -1,10 +1,11 @@
 # Task Generation GRPO Training via SkyPilot - Qwen3-8B
 # Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key> --env ANTHROPIC_API_KEY=<key>
 #
-# Reward: R(task) = judge_gate * base_reward
-#   judge_gate:  LLM-as-a-judge binary gate (valid task? 0/1)
-#   base_reward: Positive value for valid tasks (default 0.1)
-# Fleet evaluator (variance/separation) runs at periodic eval, not per-step.
+# Reward: R(task) = validity_gate * (base_reward + variance + alpha * separation)
+#   validity_gate: LLM-as-a-judge binary gate (valid task? 0/1)
+#   base_reward:   Cold-start bootstrap (default 0.1)
+#   variance:      Score variance across k Fleet harness rollouts
+#   separation:    Performance gap between models (weighted by alpha)
 #
 # Model: Qwen/Qwen3-8B
 # GPUs: 4 (FSDP2 + Adam requires >80GB per GPU with 2 GPUs)
@@ -140,6 +141,7 @@ run: |
   uv run --isolated --extra "$INFERENCE_BACKEND" \
     --with "litellm>=1.75.5" \
     --with "boto3" \
+    --with "fleet-python>=0.2.79" \
     -m integrations.fleet.entrypoints.main_task_gen \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/validation.parquet']" \
@@ -179,7 +181,7 @@ run: |
     generator.weight_sync_backend=nccl \
     generator.async_engine=true \
     generator.batched=false \
-    generator.trajectory_timeout_seconds=300 \
+    generator.trajectory_timeout_seconds=1800 \
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
@@ -191,4 +193,8 @@ run: |
     trainer.ckpt_path="$HOME/ckpts/task_gen" \
     trainer.dump_data_batch=true \
     ++environment.skyrl_gym.task_gen.judge_model="$JUDGE_MODEL" \
-    ++environment.skyrl_gym.task_gen.base_reward=$BASE_REWARD
+    ++environment.skyrl_gym.task_gen.base_reward=$BASE_REWARD \
+    ++environment.skyrl_gym.task_gen.evaluator_models='$EVALUATOR_MODELS' \
+    ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
+    ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
+    ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS
