@@ -3,13 +3,6 @@ name: "Fleet Task Training (SkyPilot)"
 on:
   workflow_dispatch:
     inputs:
-      modality:
-        description: "Task modality"
-        type: choice
-        options:
-          - tool_use
-          - computer_use
-        default: tool_use
       env_keys:
         description: "Fleet environment filter (empty=all, or comma-separated: github,booking,reddit)"
         type: string
@@ -150,9 +143,13 @@ jobs:
       - name: Launch Training Cluster
         id: launch
         run: |
-          # Use tool_use WANDB key (all current tasks are tool_use; MODALITY is defined in task YAML)
-          WANDB_KEY="$WANDB_KEY_TOOL_USE"
-          [ -z "$WANDB_KEY" ] && echo "ERROR: WANDB key not set" && exit 1
+          # Select WANDB key based on modality derived from task YAML
+          if [ "${{ steps.cluster.outputs.modality }}" = "computer_use" ]; then
+            WANDB_KEY="$WANDB_KEY_COMPUTER_USE"
+          else
+            WANDB_KEY="$WANDB_KEY_TOOL_USE"
+          fi
+          [ -z "$WANDB_KEY" ] && echo "ERROR: WANDB key not set for modality '${{ steps.cluster.outputs.modality }}'" && exit 1
 
           LAUNCH_CMD="sky launch skyrl-train/tasks/${{ inputs.task_name }}.yaml"
           LAUNCH_CMD="$LAUNCH_CMD --cluster ${{ steps.cluster.outputs.name }}"
