@@ -2,16 +2,18 @@
 Task Generation Environment for SkyRL.
 
 Single-turn BaseTextEnv where the LLM generates (prompt, verifier) for a Fleet
-environment. Reward is computed from validation quality:
+environment. Reward:
 
-    R(task) = validation_score  (graduated: 0.0 to 1.0 based on checks passed)
+    R(task) = judge_gate * base_reward
 
-Phase 1: Validity-based reward (no inner-loop evaluation).
-Phase 2 (future): Add evaluator-based reward via Fleet harness rollouts.
+    judge_gate:  Binary 0/1 from LLM-as-a-judge (is the task valid and coherent?)
+    base_reward: Positive value for passing (default 0.1). Provides GRPO signal
+                 via variance across samples (some pass judge, some don't).
 """
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Tuple
 
 from omegaconf import DictConfig
@@ -32,21 +34,18 @@ logger = logging.getLogger(__name__)
 class TaskGenEnv(BaseTextEnv):
     """Environment for RL-based task generation.
 
-    The LLM (task generator policy) receives environment context (tool schemas,
-    priors on verifier/task quality) and must output a task specification
-    consisting of a prompt and verifier function.
+    The LLM generates (prompt, verifier) pairs for Fleet environments.
+    Single-turn: one generation = one task = one episode.
 
-    This is a single-turn environment: one generation = one task = one episode.
-
-    Phase 1: Reward comes from graduated validity scoring (sandbox checks).
-    Phase 2 (future): Add evaluator-based reward via Fleet harness rollouts.
+    Reward = judge_gate * base_reward
 
     Constructor args (via extras, from dataset):
-        env_key: Fleet environment key (e.g., "github", "booking-com")
-        env_version: Fleet environment version
-        env_tools: JSON string of tool name list
-        env_tools_schema: JSON string of full OpenAI-format tool schemas
-        env_variable_keys: JSON string of available context variable names
+        env_key, env_version, data_key, data_version
+        env_tools, env_tools_schema, env_variable_keys
+
+    Constructor args (via env_config, from Hydra):
+        judge_model: Model ID for LLM-as-a-judge gate (e.g. "anthropic/claude-sonnet-4-6")
+        base_reward: Reward for passing the judge gate (default 0.1)
     """
 
     def __init__(
@@ -104,6 +103,18 @@ class TaskGenEnv(BaseTextEnv):
         # Verifier sandbox — filters out CUA-only tool "computer" from available tools
         api_tools = set(self.env_tools) - {"computer"} if self.env_tools else None
         self.sandbox = VerifierSandbox(available_tools=api_tools if api_tools else None)
+
+        # Judge config (from Hydra env_config)
+        self.judge_model = str(env_config.get("judge_model", "")) if env_config else ""
+        self.base_reward = float(env_config.get("base_reward", 0.1)) if env_config else 0.1
+
+        # API key from environment variable (set by SkyPilot YAML)
+        self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY", "")
+
+        logger.info(
+            f"TaskGenEnv: env={self.env_key}, judge={self.judge_model or 'none'}, "
+            f"base_reward={self.base_reward}, tools={len(self.env_tools)}"
+        )
 
     def _format_tool_schema(self, tool: Dict[str, Any]) -> str:
         """Format a single tool schema for the system prompt."""
@@ -216,18 +227,62 @@ Generate exactly ONE task. Output it in this format:
 
         return "\n".join(parts)
 
+    def _judge_task(self, prompt: str, verifier: str) -> float:
+        """LLM-as-a-judge gate: returns 0.0 (invalid) or 1.0 (valid).
+
+        Uses a model to check if the generated (prompt, verifier) pair
+        is valid and coherent. This is the binary gate in the reward formula.
+        """
+        if not self.judge_model or not self.openrouter_api_key:
+            return 1.0  # No judge configured, pass through
+
+        # Build concise tool list for context
+        tool_names = [t for t in self.env_tools if t != "computer"]
+        tools_str = ", ".join(tool_names[:20]) if tool_names else "none discovered"
+
+        judge_prompt = (
+            f'Evaluate this task for the "{self.env_key}" environment.\n\n'
+            f"Available tools: {tools_str}\n\n"
+            f"Task prompt:\n{prompt}\n\n"
+            f"Verifier code:\n```python\n{verifier}\n```\n\n"
+            "A valid task must:\n"
+            "1. Have a clear, specific prompt describing what an agent should do\n"
+            "2. Have a verifier that checks the correct outcome via the DB API "
+            '(env.db("seed"), env.db("current"), .table().eq().all())\n'
+            "3. The verifier must check what the prompt actually asks\n"
+            "4. The prompt must not leak the answer or expected values\n"
+            "5. The verifier must return 0.0 on a fresh env (before agent acts)\n\n"
+            "Answer with exactly one word: VALID or INVALID"
+        )
+
+        try:
+            import litellm
+
+            response = litellm.completion(
+                model=f"openrouter/{self.judge_model}",
+                messages=[{"role": "user", "content": judge_prompt}],
+                temperature=0,
+                max_tokens=10,
+                api_key=self.openrouter_api_key,
+            )
+            answer = response.choices[0].message.content.strip().upper()
+            is_valid = "VALID" in answer and "INVALID" not in answer
+            logger.info(f"LLM judge [{self.env_key}]: {answer} -> {'VALID' if is_valid else 'INVALID'}")
+            return 1.0 if is_valid else 0.0
+        except Exception as e:
+            logger.warning(f"LLM judge failed, defaulting to valid: {e}")
+            return 1.0
+
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """Process the generated task and compute reward.
 
-        Reward is a graduated validity score based on how many sandbox
-        checks pass. This gives GRPO signal even without inner-loop
-        evaluation (Phase 1).
+        Reward = judge_gate * base_reward
 
-        Args:
-            action: LLM output containing <task><prompt>...</prompt><verifier>...</verifier></task>
-
-        Returns:
-            BaseTextEnvStepOutput with graduated validity reward.
+        Pipeline:
+            1. Parse output -> fail = reward 0
+            2. Sandbox validation -> fail = reward 0
+            3. LLM-as-a-judge -> gate (0/1)
+            4. Reward = gate * base_reward
         """
         self.turns += 1
         metadata: Dict[str, Any] = {"env_key": self.env_key}
@@ -236,20 +291,15 @@ Generate exactly ONE task. Output it in this format:
         parsed = parse_task_output(action)
         if parsed is None:
             metadata["error"] = "parse_failed"
-            metadata["reward_breakdown"] = {"parse": 0.0, "total": 0.0}
-            return BaseTextEnvStepOutput(
-                observations=[],
-                reward=0.0,
-                done=True,
-                metadata=metadata,
-            )
+            metadata["reward_breakdown"] = {"total": 0.0}
+            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
         prompt = parsed["prompt"]
         verifier = parsed["verifier"]
         metadata["generated_prompt"] = prompt
         metadata["generated_verifier"] = verifier
 
-        # 2. Validate via sandbox — graduated score
+        # 2. Sandbox validation (fast pre-filter)
         validation = self.sandbox.validate(verifier, prompt)
         metadata["validation"] = {
             "valid": validation.valid,
@@ -257,27 +307,25 @@ Generate exactly ONE task. Output it in this format:
             "failed": validation.checks_failed,
             "error": validation.error,
         }
+        if not validation.valid:
+            metadata["reward_breakdown"] = {"sandbox": 0.0, "total": 0.0}
+            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
-        # Graduated reward: fraction of checks passed
-        # Parse success = 1 bonus check (we got past parse_task_output)
-        total_checks = len(validation.checks_passed) + len(validation.checks_failed) + 1
-        passed_checks = len(validation.checks_passed) + 1  # +1 for parse success
-        reward = passed_checks / total_checks
+        # 3. LLM-as-a-judge gate (binary 0/1)
+        judge_gate = self._judge_task(prompt, verifier)
+        metadata["judge_gate"] = judge_gate
+
+        # 4. Reward = gate * base_reward
+        reward = judge_gate * self.base_reward
 
         metadata["reward_breakdown"] = {
-            "parse": 1.0,
-            "checks_passed": len(validation.checks_passed),
-            "checks_failed": len(validation.checks_failed),
-            "total_checks": total_checks,
+            "sandbox": 1.0,
+            "judge": judge_gate,
+            "base_reward": self.base_reward,
             "total": reward,
         }
 
-        return BaseTextEnvStepOutput(
-            observations=[],
-            reward=reward,
-            done=True,
-            metadata=metadata,
-        )
+        return BaseTextEnvStepOutput(observations=[], reward=reward, done=True, metadata=metadata)
 
     def init(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """Initialize the environment with env context as the prompt.
