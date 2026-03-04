@@ -49,9 +49,11 @@ HELD_OUT_ENVS = {
 # Excluded environments (removed from both train and eval)
 # v0.3.6: google-maps excluded due to broken MCP server (502 errors, "database is locked")
 # v0.4.0: dropbox excluded due to broken env (instance creation timeouts)
+# v51: forums-homes excluded — tool_use env incorrectly tagged as computer_use,
+#      causes init failures (no 'computer' tool) in CUA training
 EXCLUDED_ENVS = {
-    "tool_use": ["dropbox"],
-    "computer_use": ["dropbox"],
+    "tool_use": ["dropbox", "forums-homes"],
+    "computer_use": ["dropbox", "forums-homes"],
 }
 
 # Tasks excluded due to missing CURRENT_DATE in env_variables (v0.4.0)

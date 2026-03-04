@@ -39,6 +39,20 @@ sky launch skyrl-train/tasks/openenv-fleet-grpo.yaml \
 | hubspot | 12 | 0 | 12 |
 | dropbox | 2 | 0 | 2 |
 
+## Dataset Versions
+
+| Version | Tasks | Notes |
+|---------|-------|-------|
+| v3 | 20,557 | Includes google-maps (4.7K tasks with longer tool schemas) |
+| v4 | 15,169 | google-maps excluded (broken MCP server: 502 errors, "database is locked") |
+| v5 | 5,674 | Curated subset with new envs (pagerduty, quickbooks, vanta, sentry, snyk, ramp, etc.) |
+| **v51** | **5,479** | **Recommended.** Removes forums-homes (175 tasks) — tool_use env incorrectly tagged as computer_use, causes init failures in CUA training (no 'computer' tool). Also removed from tool_use for consistency. |
+
+Dataset files live in S3: `s3://fleet-internal-datasets/{version}/openenv/`
+- `all_computer_use.json` — CUA tasks only
+- `all_tool_use.json` — tool_use tasks only
+- `all_tasks.json` — superset of both
+
 ## Dataset Split Strategy
 
 The `prepare_dataset.py` script creates train/eval splits with the following strategy:
