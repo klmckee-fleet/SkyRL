@@ -103,30 +103,40 @@ setup: |
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
-  # SkyPilot containers may not have /usr/local/cuda; detect from common paths
+  # Detect CUDA_HOME from standard paths, then search broadly
   CUDA_HOME=""
-  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2; do
+  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2 /usr/local/cuda-12.1; do
     if [ -x "$d/bin/nvcc" ]; then
       CUDA_HOME="$d"
       break
     fi
   done
-  if [ -z "$CUDA_HOME" ] && ! command -v nvcc &>/dev/null; then
-    echo "nvcc not found in standard paths, installing CUDA toolkit..."
-    apt-get update -qq && apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
-  fi
   if [ -z "$CUDA_HOME" ]; then
-    NVCC_BIN=$(which nvcc 2>/dev/null || true)
+    NVCC_BIN=$(find /usr -name nvcc -type f 2>/dev/null | head -1 || true)
     if [ -n "$NVCC_BIN" ]; then
       CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
-    else
-      CUDA_HOME="/usr/local/cuda"
     fi
+  fi
+  if [ -z "$CUDA_HOME" ]; then
+    echo "ERROR: CUDA toolkit (nvcc) not found. FlashInfer JIT requires nvcc for GatedDeltaNet kernels."
+    echo "Searching for CUDA directories..."
+    ls -la /usr/local/ 2>/dev/null || true
+    find /usr -name "cuda*" -maxdepth 3 2>/dev/null | head -20 || true
+    echo "Attempting pip install of nvidia-cuda-nvcc..."
+    uv pip install nvidia-cuda-nvcc-cu12
+    NVCC_BIN=$(find "$(python -c 'import site; print(site.getsitepackages()[0])')" -name nvcc -type f 2>/dev/null | head -1 || true)
+    if [ -n "$NVCC_BIN" ]; then
+      CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
+    fi
+  fi
+  if [ -z "$CUDA_HOME" ]; then
+    echo "FATAL: Cannot find nvcc anywhere"
+    exit 1
   fi
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
   echo "CUDA_HOME=$CUDA_HOME"
-  nvcc --version || { echo "ERROR: nvcc required for FlashInfer JIT (GatedDeltaNet kernels)"; exit 1; }
+  nvcc --version
   echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli
