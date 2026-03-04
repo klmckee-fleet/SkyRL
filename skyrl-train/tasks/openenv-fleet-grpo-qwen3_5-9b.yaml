@@ -93,7 +93,9 @@ setup: |
   uv sync --extra vllm
   # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  uv pip install -U vllm "transformers>=4.57.0" --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
+  uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
   # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
   uv pip uninstall flash-attn
