@@ -114,7 +114,7 @@ setup: |
   if [ -z "$CUDA_HOME" ]; then
     echo "nvcc not found in /usr/local/cuda-*. Installing via pip..."
     uv pip install nvidia-cuda-nvcc-cu12
-    CUDA_HOME=$(python -c "import nvidia.cuda_nvcc, os; print(os.path.dirname(nvidia.cuda_nvcc.__file__))")
+    CUDA_HOME=$(python -c "import nvidia.cuda_nvcc; print(nvidia.cuda_nvcc.__path__[0])")
   fi
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
