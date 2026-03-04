@@ -48,8 +48,32 @@ def init_fn(x: torch.nn.Module):
     return x
 
 
+def _patch_accelerate_for_torch_compat():
+    """Patch Parameter.__new__ to handle _is_hf_initialized incompatibility with torch 2.10+.
+
+    accelerate's register_empty_parameter grabs param.__dict__ (which includes
+    _is_hf_initialized set by transformers) and passes it as **kwargs to
+    Parameter(data, **kwargs). torch 2.10+ Parameter.__new__() rejects unknown kwargs.
+
+    Fix: make Parameter.__new__ accept and ignore extra kwargs.
+    See: https://github.com/volcengine/verl/issues/4522
+    """
+    if getattr(torch.nn.Parameter, "_skyrl_patched", False):
+        return
+
+    _original_param_new = torch.nn.Parameter.__new__
+
+    def _patched_param_new(cls, data=None, requires_grad=True, **_extra_kwargs):
+        return _original_param_new(cls, data, requires_grad)
+
+    torch.nn.Parameter.__new__ = _patched_param_new
+    torch.nn.Parameter._skyrl_patched = True
+
+
 def get_init_weight_context_manager(use_meta_tensor=True, mesh: DeviceMesh = None):
     from accelerate import init_empty_weights
+
+    _patch_accelerate_for_torch_compat()
 
     def cpu_init_weights():
         return torch.device("cpu")
