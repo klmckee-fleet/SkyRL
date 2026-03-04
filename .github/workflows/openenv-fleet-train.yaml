@@ -87,7 +87,7 @@ jobs:
           mkdir -p ~/.lambda_cloud && echo "api_key = ${{ secrets.LAMBDA_API_KEY }}" > ~/.lambda_cloud/lambda_keys
           pip3 install runpod 2>/dev/null || true && runpod config "${{ secrets.RUNPOD_API_KEY }}" || true
           mkdir -p ~/.config/vastai && echo "${{ secrets.VAST_API_KEY }}" > ~/.config/vastai/vast_api_key
-          pip3 install prime 2>/dev/null || true && prime config set-api-key "${{ secrets.PRIME_INTELLECT_API_KEY }}" || true
+          mkdir -p ~/.prime && echo '{"api_key":"${{ secrets.PRIME_INTELLECT_API_KEY }}","team_id":"cmlbfw5do0000kvf10e4pegd0"}' > ~/.prime/config.json
           pip3 install "skypilot-nightly[primeintellect,nebius]" 2>/dev/null || true
           mkdir -p ~/.nebius && echo '${{ secrets.NEBIUS_CREDENTIALS_JSON }}' > ~/.nebius/credentials.json
           echo "${{ secrets.NEBIUS_TENANT_ID }}" > ~/.nebius/NEBIUS_TENANT_ID.txt
