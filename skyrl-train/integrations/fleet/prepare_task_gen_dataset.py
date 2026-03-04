@@ -722,6 +722,15 @@ def build_task_gen_dataset_grpo(
             tasks_with_verifier.append(t)
     print(f"Tasks with verifier (>= {min_verifier_len} chars): {len(tasks_with_verifier)}")
 
+    # Exclude environments known to overflow context (too many tools)
+    _EXCLUDED_ENVS = {"github"}
+    before = len(tasks_with_verifier)
+    tasks_with_verifier = [
+        t for t in tasks_with_verifier if (t.get("env_key") or t.get("env_id") or "unknown") not in _EXCLUDED_ENVS
+    ]
+    if before != len(tasks_with_verifier):
+        print(f"Excluded {_EXCLUDED_ENVS}: {before} -> {len(tasks_with_verifier)} tasks")
+
     # Filter by env_keys if specified (before max_tasks truncation)
     if env_keys_filter:
         allowed = set(env_keys_filter)
