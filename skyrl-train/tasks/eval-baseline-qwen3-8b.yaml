@@ -141,12 +141,23 @@ run: |
   echo "===== TRAJECTORIES ====="
   wc -l "$OUTPUT_DIR"/*.jsonl || true
 
-  # Upload results to S3
+  # Upload results to S3 (best-effort, may fail without AWS creds)
   pip install awscli 2>/dev/null || true
   S3_PATH="s3://skyrl-trajectories/evals/eval-baseline-qwen3-8b/$(date -u +%Y%m%d_%H%M%S)"
   echo "Uploading results to $S3_PATH..."
-  aws s3 cp "$OUTPUT_DIR" "$S3_PATH" --recursive
-  echo "Results uploaded to $S3_PATH"
+  aws s3 cp "$OUTPUT_DIR" "$S3_PATH" --recursive || echo "S3 upload failed (no AWS creds?), skipping"
+
+  # Commit results to the branch
+  echo "Committing results to git..."
+  cd ~/sky_workdir
+  RESULTS_DIR="skyrl-train/eval_results"
+  mkdir -p "$RESULTS_DIR"
+  cp "$OUTPUT_DIR"/* "$RESULTS_DIR/"
+  git config user.email "eval-bot@fleet.ai"
+  git config user.name "Fleet Eval Bot"
+  git add "$RESULTS_DIR/"
+  git commit -m "eval results: $MODEL — ${NUM_TASKS} tasks x ${ROLLOUTS_PER_TASK} rollouts ($(date -u +%Y-%m-%d %H:%M))"
+  git push origin HEAD || echo "Git push failed, results are in GHA logs above"
 
   # Cleanup
   kill $VLLM_PID 2>/dev/null || true
