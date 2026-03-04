@@ -221,8 +221,9 @@ def _collect_env_metadata(
         data_key = first_task.get("data_key")
         data_version = first_task.get("data_version")
 
-        # Collect all unique env_variable keys across tasks
+        # Collect env_variable keys and representative values from first task
         all_var_keys: set = set()
+        representative_env_vars: Dict[str, Any] = {}
         for t in env_tasks:
             env_vars = t.get("env_variables") or {}
             if isinstance(env_vars, str):
@@ -231,11 +232,15 @@ def _collect_env_metadata(
                 except json.JSONDecodeError:
                     env_vars = {}
             all_var_keys.update(env_vars.keys())
+            # Use first task's values as representative (same env config)
+            if not representative_env_vars and env_vars:
+                representative_env_vars = dict(env_vars)
 
         result[env_key] = {
             "data_key": data_key,
             "data_version": data_version,
             "env_variable_keys": sorted(all_var_keys),
+            "env_variables": representative_env_vars,
         }
     return result
 
@@ -570,6 +575,7 @@ def build_task_gen_dataset_grpo(
                 "env_tools": json.dumps(tool_names),
                 "env_tools_schema": json.dumps(tool_schemas),
                 "env_variable_keys": json.dumps(env_var_keys),
+                "env_variables": json.dumps(meta.get("env_variables", {})),
             }
             all_records.append(record)
 
