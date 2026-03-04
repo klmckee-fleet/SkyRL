@@ -103,24 +103,35 @@ setup: |
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
-  # Detect CUDA_HOME from standard paths, then fall back to pip package
+  # vLLM nightly ships torch 2.10+cu130 (CUDA 13.0), so we need CUDA 13 nvcc
+  # nvidia-cuda-nvcc-cu12 does NOT contain nvcc (only ptxas); nvidia-cuda-nvcc v13+ DOES
   CUDA_HOME=""
-  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2; do
+  for d in /usr/local/cuda /usr/local/cuda-13.0 /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4; do
     if [ -x "$d/bin/nvcc" ]; then
       CUDA_HOME="$d"
       break
     fi
   done
+  if [ -z "$CUDA_HOME" ] && command -v nvcc &>/dev/null; then
+    NVCC_PATH=$(command -v nvcc)
+    CUDA_HOME=$(dirname "$(dirname "$NVCC_PATH")")
+  fi
   if [ -z "$CUDA_HOME" ]; then
-    echo "nvcc not found in /usr/local/cuda-*. Installing via pip..."
-    uv pip install nvidia-cuda-nvcc-cu12
-    CUDA_HOME=$(python -c "import nvidia.cuda_nvcc; print(nvidia.cuda_nvcc.__path__[0])")
+    echo "nvcc not found on system. Installing nvidia-cuda-nvcc (CUDA 13) via pip..."
+    uv pip install nvidia-cuda-nvcc
+    NVCC_BIN=$(find .venv -name "nvcc" -not -name "*.py" -type f 2>/dev/null | head -1 || true)
+    if [ -z "$NVCC_BIN" ]; then
+      echo "FATAL: nvcc binary not found after pip install"
+      find .venv -path "*/nvidia/*" -name "nvcc*" 2>/dev/null || true
+      find .venv -path "*/cu1*/*" -maxdepth 8 2>/dev/null | head -30 || true
+      exit 1
+    fi
+    chmod +x "$NVCC_BIN"
+    CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
   fi
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
   echo "CUDA_HOME=$CUDA_HOME"
-  ls -la "$CUDA_HOME/bin/" 2>/dev/null || echo "WARNING: $CUDA_HOME/bin/ not found"
-  chmod +x "$CUDA_HOME/bin/nvcc" 2>/dev/null || true
   "$CUDA_HOME/bin/nvcc" --version
   echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
