@@ -165,7 +165,8 @@ run: |
   # CUDA_HOME for FlashInfer JIT compilation (GatedDeltaNet kernels)
   source "$HOME/.cuda_env" 2>/dev/null || true
 
-  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  # expandable_segments incompatible with vLLM memory pool in torch 2.10+
+  # (AssertionError: pytorch/pytorch#147851)
 
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
