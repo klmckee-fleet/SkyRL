@@ -4,7 +4,7 @@
 # VL (Vision-Language) training for computer_use environments with screenshots.
 #
 # Model: Qwen/Qwen3.5-4B (4B parameters, natively multimodal, early fusion + GatedDeltaNet)
-# GPUs: 4x B200/H200-SXM (RunPod, Lambda, Vast, Nebius, PrimeIntellect)
+# GPUs: 4x B200/H200/H100 (RunPod, Lambda, Vast, Nebius, PrimeIntellect)
 #
 # NOTE: Requires vLLM nightly (>=0.16.1.dev0) — Qwen3.5 support not in stable until v0.17.0
 #
@@ -35,6 +35,17 @@ resources:
       cloud: nebius
     # PrimeIntellect: H200 available (requires funded wallet)
     - accelerators: H200:4
+      cloud: primeintellect
+    # H100-SXM fallback (widely available)
+    - accelerators: H100:4
+      cloud: runpod
+    - accelerators: H100:4
+      cloud: lambda
+    - accelerators: H100:4
+      cloud: vast
+    - accelerators: H100:4
+      cloud: nebius
+    - accelerators: H100:4
       cloud: primeintellect
 
 num_nodes: 1
