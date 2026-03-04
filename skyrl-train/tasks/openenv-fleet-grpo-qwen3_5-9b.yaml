@@ -102,10 +102,6 @@ setup: |
   # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
-  # Allow pidfd_getfd for CUDA IPC in containerized envs (vLLM collective_rpc weight sync)
-  # sitecustomize.py runs on every Python process startup, covering Ray workers + vLLM engines
-  SITE_DIR=$(python -c "import site; print(site.getsitepackages()[0])")
-  echo 'import ctypes; ctypes.CDLL("libc.so.6", use_errno=True).prctl(0x59616d61, -1, 0, 0, 0)' > "$SITE_DIR/sitecustomize.py"
   uv pip install wandb boto3 awscli
 
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
@@ -133,7 +129,12 @@ run: |
   mkdir -p "$TMP_DIR"
   export TMPDIR="$TMP_DIR"
 
-  export PYTORCH_ALLOC_CONF=expandable_segments:True
+  # Disable expandable_segments: CUDA IPC of expandable segments requires pidfd_getfd syscall,
+  # which is blocked by seccomp in containerized envs (RunPod). Standard cudaIpcMemHandle works fine.
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+  # Disable vLLM V1 multiprocessing: V1 runs engine core in a separate process even with TP=1,
+  # triggering CUDA IPC (pidfd_getfd). Single-process mode avoids IPC entirely.
+  export VLLM_ENABLE_V1_MULTIPROCESSING=0
 
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
