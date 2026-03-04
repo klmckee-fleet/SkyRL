@@ -30,7 +30,7 @@ num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: main
+  ref: eval-baseline-qwen3.5-9b
 
 envs:
   FLEET_API_KEY: ""
