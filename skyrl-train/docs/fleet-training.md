@@ -46,7 +46,7 @@ sky launch skyrl-train/tasks/openenv-fleet-grpo.yaml \
 | v3 | 20,557 | Includes google-maps (4.7K tasks with longer tool schemas) |
 | v4 | 15,169 | google-maps excluded (broken MCP server: 502 errors, "database is locked") |
 | v5 | 5,674 | Curated subset with new envs (pagerduty, quickbooks, vanta, sentry, snyk, ramp, etc.) |
-| **v51** | **5,479** | **Recommended.** Removes forums-homes (175 tasks) — tool_use env incorrectly tagged as computer_use, causes init failures in CUA training (no 'computer' tool). Also removed from tool_use for consistency. |
+| **v51** | **5,542** | **Recommended.** Removes forums-homes from computer_use only (112 tasks) — tool_use env incorrectly tagged as computer_use, causes init failures in CUA training (no 'computer' tool). tool_use and all_tasks unchanged from v5. |
 
 Dataset files live in S3: `s3://fleet-internal-datasets/{version}/openenv/`
 - `all_computer_use.json` — CUA tasks only
