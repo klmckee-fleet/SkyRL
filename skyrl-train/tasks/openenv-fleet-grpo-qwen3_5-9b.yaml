@@ -102,6 +102,10 @@ setup: |
   # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
+  # Allow pidfd_getfd for CUDA IPC in containerized envs (vLLM collective_rpc weight sync)
+  # sitecustomize.py runs on every Python process startup, covering Ray workers + vLLM engines
+  SITE_DIR=$(python -c "import site; print(site.getsitepackages()[0])")
+  echo 'import ctypes; ctypes.CDLL("libc.so.6", use_errno=True).prctl(0x59616d61, -1, 0, 0, 0)' > "$SITE_DIR/sitecustomize.py"
   uv pip install wandb boto3 awscli
 
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
