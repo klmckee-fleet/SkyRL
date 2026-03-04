@@ -122,6 +122,59 @@ environment:
 | `_orch.reset()` fails | Warning logged, continues with empty observation |
 | `call_tool()` fails | Error returned in observation, episode continues |
 
+## Task Generation (GRPO)
+
+RL-based task generation: trains Qwen3-8B to produce (prompt, verifier) pairs for Fleet environments using GRPO.
+
+**Reward formula**: `R(task) = validity_gate * (base_reward + variance + alpha * separation)`
+
+### Dataset Preparation
+
+`prepare_task_gen_dataset.py` builds GRPO training data by:
+1. Loading validated tasks from S3 (`all_tool_use.json`)
+2. Discovering tool schemas from live Fleet environments via OpenEnv MCP
+3. Fetching DB schemas from Supabase `seed_versions` -> S3 `schema.sql`
+4. Storing env context (tools, schema, env_variables) in each parquet record
+
+### Training Runs
+
+#### Run: `task_gen_bf9229d1` (enkfchnh) — 2026-03-04
+
+Config: Qwen3-8B, 4xGPU, batch=4, n_samples=4, lr=1e-6, base_reward=0.1
+
+**Before schema injection.** env_variables injected but no DB schema. github included (wasting compute).
+
+| Env | Steps | pass@4 | GRPO Signal | Avg Variance | Notes |
+|-----|-------|--------|-------------|--------------|-------|
+| github | 152 | 0% | 0% | 0.0000 | Context overflow (160 tools) — excluded in next run |
+| booking | 121 | 70.5% | 79.3% | 0.0018 | Best signal |
+| reddit | 66 | 100% | 16.7% | 0.0003 | Valid tasks but low variance |
+| ticketmaster | 34 | 100% | 52.9% | 0.0011 | |
+| zillow | 21 | 95.2% | 61.9% | 0.0047 | Highest variance |
+| amazon | 21 | 100% | 38.1% | 0.0007 | |
+| rops | 13 | 0% | 0% | 0.0000 | |
+| fira | 8 | 100% | 62.5% | 0.0013 | |
+| wallst | 8 | 12.5% | 12.5% | 0.0002 | |
+| carlisle | 6 | 100% | 66.7% | 0.0014 | |
+
+- **169 steps, 12.4h runtime**
+- Reward: avg=0.0348, max=0.1312 (mostly base_reward from judge pass)
+- Reward trend: 0.0295 (first half) -> 0.0326 (second half)
+- 151/169 steps (89%) produced non-zero reward
+- **Key issue**: github consumed ~90% of steps with 0% signal
+- **Root cause of low variance**: model guesses wrong DB table/column names in verifiers
+
+### Changelog
+
+- `a0913bf5` — Exclude github from dataset (context overflow, 0% signal)
+- `99fcda49` — Inject DB schema (table/column names) from Supabase/S3
+- `18fa5d55` — Pass env_variables to prompt and Fleet harness
+- `c51abf78` — Document env_variables access pattern in prompt
+- `4b905a0f` — Fix evaluator_models shell quoting
+- `2f360e0e` — Add Fleet harness rollouts for full reward formula
+- `efbe658d` — Handle prompt-too-long crash (response_end_idx=None)
+- `de0efc56` — Add LLM-as-a-judge reward gate
+
 ## Dependencies
 
 - **OpenEnv**: `pip install openenv[fleet]` or add to PYTHONPATH
