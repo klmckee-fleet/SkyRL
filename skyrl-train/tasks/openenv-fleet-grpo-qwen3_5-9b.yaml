@@ -119,7 +119,9 @@ setup: |
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
   echo "CUDA_HOME=$CUDA_HOME"
-  nvcc --version
+  ls -la "$CUDA_HOME/bin/" 2>/dev/null || echo "WARNING: $CUDA_HOME/bin/ not found"
+  chmod +x "$CUDA_HOME/bin/nvcc" 2>/dev/null || true
+  "$CUDA_HOME/bin/nvcc" --version
   echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli
