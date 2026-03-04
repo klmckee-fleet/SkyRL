@@ -96,8 +96,8 @@ async def collect_rollout(
         total_gen_time = 0.0
         total_step_time = 0.0
 
-        # Approximate token budget: leave room for generation (131072 = vLLM max-model-len)
-        max_context_tokens = 131072 - max_generate_length
+        # Approximate token budget: leave room for generation (40960 = Qwen3-8B max_position_embeddings)
+        max_context_tokens = 40960 - max_generate_length
 
         while not done and env.turns < max_turns:
             turn_num = env.turns + 1
