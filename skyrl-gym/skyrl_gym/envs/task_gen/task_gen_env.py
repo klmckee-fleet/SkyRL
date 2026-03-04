@@ -193,13 +193,23 @@ class TaskGenEnv(BaseTextEnv):
         # Environment variables (user context available at task runtime)
         if self.env_variable_keys:
             parts.append("\n### Environment Variables")
-            parts.append("These context variables are set at task runtime and can be referenced in prompts/verifiers:")
+            parts.append(
+                "These variables parameterize each environment instance. "
+                'Access them in verifiers via `env.env_variables["KEY"]`:'
+            )
             for var_key in self.env_variable_keys:
-                parts.append(f"- {var_key}")
+                parts.append(f"- `{var_key}`")
 
         # --- B. Priors (concise, static, same for all envs) ---
+        env_var_api = ""
+        if self.env_variable_keys:
+            example_key = self.env_variable_keys[0]
+            env_var_api = f"""
+# Access environment variables:
+val = env.env_variables["{example_key}"]"""
+
         parts.append(
-            """
+            f"""
 ## Verifier Guidelines
 
 The verifier checks whether the agent completed the task by inspecting database state changes.
@@ -218,9 +228,9 @@ rows = current.table("table_name").neq("column", value).all()
 count = current.table("table_name").eq("column", value).count()
 
 # Compare seed vs current to detect state changes:
-seed_rows = seed.table("orders").all()
-current_rows = current.table("orders").all()
-new_orders = [r for r in current_rows if r not in seed_rows]
+seed_rows = seed.table("table_name").all()
+current_rows = current.table("table_name").all()
+new_rows = [r for r in current_rows if r not in seed_rows]{env_var_api}
 ```
 
 ### Rules
