@@ -97,6 +97,8 @@ setup: |
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
   # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
   uv pip uninstall flash-attn
+  # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
+  uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   uv pip install wandb boto3 awscli
 
