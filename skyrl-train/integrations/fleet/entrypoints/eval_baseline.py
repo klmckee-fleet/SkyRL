@@ -106,11 +106,20 @@ async def collect_rollout(
             total_chars = sum(len(m.get("content", "") or "") for m in env.chat_history)
             approx_tokens = total_chars // 2
             if approx_tokens > max_context_tokens:
-                logger.warning(
-                    f"[{task_key}] turn {turn_num}: context too long "
-                    f"(~{approx_tokens} tokens), ending rollout"
-                )
-                break
+                # Auto-trim: keep system prompt (first msg) + last 10 messages, drop middle
+                if len(env.chat_history) > 12:
+                    trimmed = len(env.chat_history) - 11
+                    env.chat_history = [env.chat_history[0]] + env.chat_history[-10:]
+                    logger.warning(
+                        f"[{task_key}] turn {turn_num}: context too long "
+                        f"(~{approx_tokens} tokens), trimmed {trimmed} middle messages"
+                    )
+                else:
+                    logger.warning(
+                        f"[{task_key}] turn {turn_num}: context too long "
+                        f"(~{approx_tokens} tokens) even with few messages, ending rollout"
+                    )
+                    break
 
             # Generate with vLLM
             gen_start = time.time()
