@@ -102,9 +102,9 @@ async def collect_rollout(
         while not done and env.turns < max_turns:
             turn_num = env.turns + 1
 
-            # Rough token estimate (~4 chars per token) to avoid 400 errors
+            # Rough token estimate (~2 chars per token for JSON-heavy tool output)
             total_chars = sum(len(m.get("content", "") or "") for m in env.chat_history)
-            approx_tokens = total_chars // 4
+            approx_tokens = total_chars // 2
             if approx_tokens > max_context_tokens:
                 logger.warning(
                     f"[{task_key}] turn {turn_num}: context too long "
