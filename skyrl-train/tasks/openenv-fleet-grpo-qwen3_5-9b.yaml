@@ -119,15 +119,15 @@ setup: |
   if [ -z "$CUDA_HOME" ]; then
     echo "nvcc not found on system. Installing nvidia-cuda-nvcc (CUDA 13) via pip..."
     uv pip install nvidia-cuda-nvcc
-    NVCC_BIN=$(find .venv -name "nvcc" -not -name "*.py" -type f 2>/dev/null | head -1 || true)
+    NVCC_BIN=$(find "$(pwd)/.venv" -name "nvcc" -not -name "*.py" -type f 2>/dev/null | head -1 || true)
     if [ -z "$NVCC_BIN" ]; then
       echo "FATAL: nvcc binary not found after pip install"
-      find .venv -path "*/nvidia/*" -name "nvcc*" 2>/dev/null || true
-      find .venv -path "*/cu1*/*" -maxdepth 8 2>/dev/null | head -30 || true
+      find "$(pwd)/.venv" -path "*/nvidia/*" -name "nvcc*" 2>/dev/null || true
+      find "$(pwd)/.venv" -path "*/cu1*/*" -maxdepth 8 2>/dev/null | head -30 || true
       exit 1
     fi
     chmod +x "$NVCC_BIN"
-    CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
+    CUDA_HOME=$(cd "$(dirname "$(dirname "$NVCC_BIN")")" && pwd)
   fi
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
