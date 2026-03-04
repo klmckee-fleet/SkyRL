@@ -32,9 +32,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
+import requests
 from datasets import Dataset
 
 logger = logging.getLogger(__name__)
@@ -305,6 +307,220 @@ def discover_all_env_tools(
 
 
 # ---------------------------------------------------------------------------
+# DB schema discovery via Supabase + S3
+# ---------------------------------------------------------------------------
+
+# Tables to exclude from schema (internal/system tables)
+_SYSTEM_TABLES = {
+    "sqlite_sequence",
+    "generation_checkpoints",
+    "seed_progress",
+    "__drizzle_migrations",
+    "_imported_comment_ids",
+    "_imported_post_ids",
+    "_litestream_lock",
+    "_litestream_seq",
+}
+
+# SQL keywords that aren't column names
+_SQL_KEYWORDS = {
+    "PRIMARY",
+    "FOREIGN",
+    "UNIQUE",
+    "CHECK",
+    "CONSTRAINT",
+    "INDEX",
+    "CREATE",
+    "TABLE",
+    "IF",
+    "NOT",
+    "EXISTS",
+    "OR",
+    "AND",
+    "ON",
+    "SET",
+    "DEFAULT",
+    "NULL",
+    "REFERENCES",
+    "CASCADE",
+    "AUTOINCREMENT",
+}
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove SQL comments (-- line comments and /* block comments */)."""
+    # Remove line comments
+    sql = re.sub(r"--[^\n]*", "", sql)
+    # Remove block comments
+    sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    return sql
+
+
+def parse_sql_schema(sql: str) -> Dict[str, List[Dict[str, str]]]:
+    """Parse CREATE TABLE SQL into compact table→columns mapping.
+
+    Returns dict: {table_name: [{"name": col, "type": type}, ...]}
+    """
+    sql = _strip_sql_comments(sql)
+    tables: Dict[str, List[Dict[str, str]]] = {}
+    # Match CREATE TABLE statements
+    for match in re.finditer(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"]?(\w+)[`\"]?\s*\((.*?)\);",
+        sql,
+        re.DOTALL | re.IGNORECASE,
+    ):
+        table_name = match.group(1)
+        if table_name.lower() in _SYSTEM_TABLES:
+            continue
+
+        body = match.group(2)
+        columns = []
+        for line in body.split(","):
+            line = line.strip()
+            # Skip constraints, foreign keys, etc.
+            if re.match(r"(PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|CONSTRAINT|INDEX)", line, re.IGNORECASE):
+                continue
+            # Parse: [``"]col_name["``] TYPE ...
+            col_match = re.match(r"[`\"]?(\w+)[`\"]?\s+(\w+)", line)
+            if col_match:
+                col_name = col_match.group(1)
+                col_type = col_match.group(2).upper()
+                # Skip if it looks like a keyword, not a column
+                if col_name.upper() in _SQL_KEYWORDS:
+                    continue
+                columns.append({"name": col_name, "type": col_type})
+
+        if columns:
+            tables[table_name] = columns
+    return tables
+
+
+def format_compact_schema(tables: Dict[str, List[Dict[str, str]]]) -> str:
+    """Format parsed schema as compact text for prompt injection.
+
+    Example output:
+        bookings: id (INTEGER), guest_first_name (TEXT), hotel_id (INTEGER), ...
+        hotels: id (INTEGER), name (TEXT), city (TEXT), ...
+    """
+    lines = []
+    for table_name in sorted(tables.keys()):
+        cols = tables[table_name]
+        col_strs = [f"{c['name']} ({c['type']})" for c in cols]
+        lines.append(f"{table_name}: {', '.join(col_strs)}")
+    return "\n".join(lines)
+
+
+def discover_env_schemas(
+    env_metadata: Dict[str, Dict[str, Any]],
+    cache_path: Optional[str] = None,
+) -> Dict[str, str]:
+    """Discover DB schemas for environments via Supabase seed_versions → S3.
+
+    Looks up each env_key's image_repo_name in the environments table, then
+    finds the schema_s3_url in seed_versions, downloads the SQL, and parses
+    it into a compact format.
+
+    Args:
+        env_metadata: Per-env metadata with data_key/data_version
+        cache_path: Optional JSON cache file for schemas
+
+    Returns:
+        Dict mapping env_key -> compact schema string
+    """
+    supabase_url = os.environ.get("SUPABASE_URL", "https://ehefoavidbttssbleuyv.supabase.co")
+    supabase_key = os.environ.get("SUPABASE_KEY", "")
+
+    # Load cache
+    cached: Dict[str, str] = {}
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path) as f:
+            cached = json.load(f)
+        print(f"Loaded schema cache with {len(cached)} environments from {cache_path}")
+
+    # Return cache if all envs are covered
+    to_discover = [k for k in env_metadata if k not in cached]
+    if not to_discover:
+        return cached
+
+    if not supabase_key:
+        print("WARNING: No SUPABASE_KEY set, skipping schema discovery")
+        return cached
+
+    try:
+        from supabase import create_client
+
+        sb = create_client(supabase_url, supabase_key)
+    except Exception as e:
+        print(f"WARNING: Could not connect to Supabase: {e}")
+        return cached
+
+    # Get env_key → image_repo_name mapping
+    envs_result = sb.table("environments").select("env_key,image_repo_name").execute()
+    env_to_repo = {}
+    for r in envs_result.data:
+        if r.get("image_repo_name"):
+            repo = r["image_repo_name"].replace("theseus/", "")
+            env_to_repo[r["env_key"]] = repo
+
+    result = dict(cached)
+    print(f"Discovering schemas for {len(to_discover)} environments...")
+
+    for env_key in sorted(to_discover):
+        repo_name = env_to_repo.get(env_key, env_key)
+        meta = env_metadata.get(env_key, {})
+        data_key = meta.get("data_key")
+
+        # Find schema_s3_url from seed_versions
+        query = sb.table("seed_versions").select("schema_s3_url,data_key,version")
+        query = query.eq("env_key", repo_name)
+        if data_key:
+            query = query.eq("data_key", data_key)
+        query = query.not_.is_("schema_s3_url", "null")
+        query = query.order("created_at", desc=True).limit(1)
+
+        sv_result = query.execute()
+        if not sv_result.data:
+            # Try without data_key filter
+            sv_result = (
+                sb.table("seed_versions")
+                .select("schema_s3_url,data_key,version")
+                .eq("env_key", repo_name)
+                .not_.is_("schema_s3_url", "null")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+
+        if not sv_result.data or not sv_result.data[0].get("schema_s3_url"):
+            print(f"  {env_key}: no schema found (repo={repo_name})")
+            continue
+
+        schema_url = sv_result.data[0]["schema_s3_url"]
+        sv_data_key = sv_result.data[0]["data_key"]
+        sv_version = sv_result.data[0]["version"]
+
+        try:
+            resp = requests.get(schema_url, timeout=30)
+            resp.raise_for_status()
+            raw_sql = resp.text
+            tables = parse_sql_schema(raw_sql)
+            compact = format_compact_schema(tables)
+            result[env_key] = compact
+            print(f"  {env_key}: {len(tables)} tables (data={sv_data_key}:{sv_version})")
+        except Exception as e:
+            print(f"  {env_key}: schema download failed: {e}")
+
+    # Save cache
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"Saved schema cache to {cache_path}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Dataset builders
 # ---------------------------------------------------------------------------
 
@@ -462,7 +678,9 @@ def build_task_gen_dataset_grpo(
     min_verifier_len: int = 50,
     max_tasks: Optional[int] = None,
     discover_tools: bool = True,
+    discover_schemas: bool = True,
     tools_cache: Optional[str] = None,
+    schema_cache: Optional[str] = None,
     api_key: Optional[str] = None,
     env_keys_filter: Optional[List[str]] = None,
 ):
@@ -476,6 +694,9 @@ def build_task_gen_dataset_grpo(
     real tool schemas via MCP. These are stored as env_tools_schema (full
     OpenAI-format JSON) and env_tools (tool name list) in each record.
 
+    When discover_schemas=True, queries Supabase seed_versions for DB schemas,
+    downloads from S3, and stores compact table→column mappings.
+
     Args:
         tasks_json: Path to Fleet tasks JSON
         output_dir: Output directory for parquet files
@@ -483,7 +704,9 @@ def build_task_gen_dataset_grpo(
         min_verifier_len: Minimum verifier code length to include
         max_tasks: Maximum total tasks to include (for testing)
         discover_tools: If True, provision Fleet envs to discover tools
+        discover_schemas: If True, fetch DB schemas from Supabase/S3
         tools_cache: Path to JSON cache file for discovered tools
+        schema_cache: Path to JSON cache file for discovered schemas
         api_key: Fleet API key (required if discover_tools=True)
         env_keys_filter: If set, only include these environment keys
     """
@@ -546,6 +769,14 @@ def build_task_gen_dataset_grpo(
                 cache_path=tools_cache,
             )
 
+    # Discover DB schemas from Supabase/S3
+    env_schemas_map: Dict[str, str] = {}
+    if discover_schemas:
+        env_schemas_map = discover_env_schemas(
+            env_metadata=env_metadata,
+            cache_path=schema_cache,
+        )
+
     # Build GRPO records: one prompt per task (prompt-only, no response)
     all_records = []
 
@@ -554,6 +785,7 @@ def build_task_gen_dataset_grpo(
         tool_names = [t["function"]["name"] for t in tool_schemas if "function" in t]
         meta = env_metadata.get(env_key, {})
         env_var_keys = meta.get("env_variable_keys", [])
+        env_schema = env_schemas_map.get(env_key, "")
 
         for task in env_tasks:
             task_key = task.get("key") or task.get("task_key", "unknown")
@@ -576,6 +808,7 @@ def build_task_gen_dataset_grpo(
                 "env_tools_schema": json.dumps(tool_schemas),
                 "env_variable_keys": json.dumps(env_var_keys),
                 "env_variables": json.dumps(meta.get("env_variables", {})),
+                "env_schema": env_schema,
             }
             all_records.append(record)
 
@@ -691,6 +924,17 @@ def main():
         default=None,
         help="JSON cache file for discovered tools (skip re-provisioning on re-runs)",
     )
+    parser.add_argument(
+        "--no-discover-schemas",
+        action="store_true",
+        help="Skip Supabase/S3 schema discovery (local testing without credentials)",
+    )
+    parser.add_argument(
+        "--schema-cache",
+        type=str,
+        default=None,
+        help="JSON cache file for discovered DB schemas",
+    )
 
     args = parser.parse_args()
 
@@ -704,7 +948,9 @@ def main():
             min_verifier_len=args.min_verifier_len,
             max_tasks=args.max_tasks,
             discover_tools=not args.no_discover_tools,
+            discover_schemas=not args.no_discover_schemas,
             tools_cache=args.tools_cache,
+            schema_cache=args.schema_cache,
             env_keys_filter=env_keys_filter,
         )
     else:

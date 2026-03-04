@@ -119,6 +119,9 @@ class TaskGenEnv(BaseTextEnv):
         else:
             self.env_variables: Dict[str, Any] = env_vars_raw or {}
 
+        # Parse env_schema (compact DB schema: table→columns)
+        self.env_schema: str = extras.get("env_schema", "") or ""
+
         # Verifier sandbox — filters out CUA-only tool "computer" from available tools
         api_tools = set(self.env_tools) - {"computer"} if self.env_tools else None
         self.sandbox = VerifierSandbox(available_tools=api_tools if api_tools else None)
@@ -217,6 +220,15 @@ class TaskGenEnv(BaseTextEnv):
             )
             for var_key in self.env_variable_keys:
                 parts.append(f"- `{var_key}`")
+
+        # Database schema (table names and columns)
+        if self.env_schema:
+            parts.append("\n### Database Schema")
+            parts.append(
+                "Use these exact table and column names in verifiers "
+                '(e.g., `current.table("bookings").eq("guest_email", val).all()`):'
+            )
+            parts.append(f"```\n{self.env_schema}\n```")
 
         # --- B. Priors (concise, static, same for all envs) ---
         env_var_api = ""
