@@ -9,21 +9,21 @@ name: fleet-eval-baseline
 resources:
   disk_size: 100
   any_of:
-    - accelerators: H100:1
+    - accelerators: B200:1
       cloud: lambda
-    - accelerators: H100:1
+    - accelerators: B200:1
       cloud: runpod
-    - accelerators: H100:1
+    - accelerators: B200:1
       cloud: vast
-    - accelerators: H100:1
+    - accelerators: B200:1
       cloud: nebius
-    - accelerators: H100-SXM:1
+    - accelerators: H200:1
       cloud: lambda
-    - accelerators: H100-SXM:1
+    - accelerators: H200:1
       cloud: runpod
-    - accelerators: H100-SXM:1
+    - accelerators: H200:1
       cloud: vast
-    - accelerators: H100-SXM:1
+    - accelerators: H200:1
       cloud: nebius
 
 num_nodes: 1
