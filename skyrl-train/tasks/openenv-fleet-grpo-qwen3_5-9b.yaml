@@ -125,7 +125,7 @@ setup: |
     file /tmp/cuda-keyring.deb
     dpkg -i /tmp/cuda-keyring.deb
     apt-get update -qq
-    apt-get install -y --no-install-recommends cuda-nvcc-12-8
+    apt-get install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 cuda-nvrtc-dev-12-8
     CUDA_HOME="/usr/local/cuda-12.8"
   fi
   export CUDA_HOME
