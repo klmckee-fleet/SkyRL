@@ -1,0 +1,142 @@
+# Baseline Evaluation: Qwen3.5-9B on Fleet Computer Use Tasks
+# Usage: sky launch tasks/eval-baseline-qwen3.5-9b.yaml --env FLEET_API_KEY=<key>
+#
+# Serves Qwen3.5-9B via vLLM and runs inference-only evaluation on 12 tasks
+# with 10 rollouts each. Results saved to ~/eval_results/.
+
+name: fleet-eval-baseline
+
+resources:
+  disk_size: 100
+  any_of:
+    - accelerators: A100-80GB:1
+      cloud: lambda
+    - accelerators: A100-80GB:1
+      cloud: runpod
+    - accelerators: A100-80GB:1
+      cloud: vast
+    - accelerators: H100:1
+      cloud: lambda
+    - accelerators: H100:1
+      cloud: runpod
+    - accelerators: H100:1
+      cloud: vast
+    - accelerators: L40S:1
+      cloud: lambda
+    - accelerators: L40S:1
+      cloud: runpod
+
+num_nodes: 1
+
+workdir:
+  url: https://github.com/fleet-ai/SkyRL.git
+  ref: main
+
+envs:
+  FLEET_API_KEY: ""
+  MODALITY: "computer_use"
+  MODEL: "Qwen/Qwen3.5-9B"
+  NUM_TASKS: "12"
+  ROLLOUTS_PER_TASK: "10"
+  MAX_TURNS: "50"
+  MAX_CONCURRENT: "8"
+  TEMPERATURE: "1.0"
+  # Not used by eval but expected by the GHA workflow
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  DATA_VERSION: "v51"
+
+setup: |
+  set -euo pipefail
+
+  # Validate required env vars
+  if [ -z "$FLEET_API_KEY" ]; then
+    echo "ERROR: FLEET_API_KEY is required"
+    exit 1
+  fi
+
+  cd skyrl-train
+
+  uv venv --python 3.12 --seed
+  source .venv/bin/activate
+
+  # Install vLLM + dependencies
+  uv sync --extra vllm
+  uv pip install openai
+
+  # Install OpenEnv for Fleet environment access
+  uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" \
+    fleet-python logfire "mcp>=1.0.0"
+
+  # Copy tasks file (use local workdir copy or download from S3)
+  mkdir -p $HOME/data
+  if [ -f "$HOME/all_computer_use.json" ]; then
+    cp "$HOME/all_computer_use.json" "$HOME/data/tasks.json"
+  else
+    echo "Downloading tasks from S3..."
+    pip install awscli
+    aws s3 cp s3://fleet-worktrial-jp/v51/openenv/all_computer_use.json \
+      "$HOME/data/tasks.json" --no-sign-request --region us-west-1
+  fi
+
+  TASK_COUNT=$(python3 -c "import json; print(len(json.load(open('$HOME/data/tasks.json'))['tasks']))")
+  echo "Loaded $TASK_COUNT tasks"
+
+run: |
+  set -euo pipefail
+  cd skyrl-train
+  source .venv/bin/activate
+
+  TASKS_FILE="$HOME/data/tasks.json"
+  OUTPUT_DIR="$HOME/eval_results"
+  mkdir -p "$OUTPUT_DIR"
+
+  # Start vLLM server in background
+  echo "Starting vLLM server for $MODEL..."
+  python -m vllm.entrypoints.openai.api_server \
+    --model "$MODEL" \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.85 \
+    &
+  VLLM_PID=$!
+
+  # Wait for vLLM to be ready
+  echo "Waiting for vLLM server..."
+  for i in $(seq 1 60); do
+    if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+      echo "vLLM server ready"
+      break
+    fi
+    if [ $i -eq 60 ]; then
+      echo "ERROR: vLLM server failed to start"
+      kill $VLLM_PID 2>/dev/null || true
+      exit 1
+    fi
+    sleep 5
+  done
+
+  # Run eval
+  echo "Starting evaluation: $NUM_TASKS tasks x $ROLLOUTS_PER_TASK rollouts"
+  uv run --isolated --extra vllm \
+    --with openai \
+    --with "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" \
+    --with "fleet-python" \
+    --with "logfire" \
+    --with "mcp>=1.0.0" \
+    -m integrations.fleet.entrypoints.eval_baseline \
+    --tasks-file "$TASKS_FILE" \
+    --model "$MODEL" \
+    --num-tasks "$NUM_TASKS" \
+    --rollouts-per-task "$ROLLOUTS_PER_TASK" \
+    --max-turns "$MAX_TURNS" \
+    --max-concurrent "$MAX_CONCURRENT" \
+    --temperature "$TEMPERATURE" \
+    --output-dir "$OUTPUT_DIR"
+
+  echo "Eval complete. Results in $OUTPUT_DIR"
+  ls -la "$OUTPUT_DIR"
+
+  # Cleanup
+  kill $VLLM_PID 2>/dev/null || true
