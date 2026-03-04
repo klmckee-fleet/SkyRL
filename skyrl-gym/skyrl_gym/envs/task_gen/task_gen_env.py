@@ -109,6 +109,16 @@ class TaskGenEnv(BaseTextEnv):
         else:
             self.env_variable_keys: List[str] = env_var_keys_raw or []
 
+        # Parse env_variables (actual values for harness evaluation)
+        env_vars_raw = extras.get("env_variables", "{}")
+        if isinstance(env_vars_raw, str):
+            try:
+                self.env_variables: Dict[str, Any] = json.loads(env_vars_raw)
+            except json.JSONDecodeError:
+                self.env_variables: Dict[str, Any] = {}
+        else:
+            self.env_variables: Dict[str, Any] = env_vars_raw or {}
+
         # Verifier sandbox — filters out CUA-only tool "computer" from available tools
         api_tools = set(self.env_tools) - {"computer"} if self.env_tools else None
         self.sandbox = VerifierSandbox(available_tools=api_tools if api_tools else None)
@@ -191,7 +201,15 @@ class TaskGenEnv(BaseTextEnv):
             parts.append("No tools discovered for this environment.")
 
         # Environment variables (user context available at task runtime)
-        if self.env_variable_keys:
+        if self.env_variables:
+            parts.append("\n### Environment Variables")
+            parts.append(
+                "These variables parameterize each environment instance. "
+                'Access them in verifiers via `env.env_variables["KEY"]`:'
+            )
+            for var_key, var_val in self.env_variables.items():
+                parts.append(f"- `{var_key}` = `{var_val}`")
+        elif self.env_variable_keys:
             parts.append("\n### Environment Variables")
             parts.append(
                 "These variables parameterize each environment instance. "
@@ -346,7 +364,7 @@ Generate exactly ONE task. Output it in this format:
                 verifier_func=verifier,
                 data_id=self.data_key or None,
                 data_version=self.data_version or None,
-                env_variables={},
+                env_variables=self.env_variables,
             )
 
             import_response = fleet.import_single_task(task)
