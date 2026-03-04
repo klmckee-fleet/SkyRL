@@ -9,22 +9,22 @@ name: fleet-eval-baseline
 resources:
   disk_size: 100
   any_of:
-    - accelerators: A100-80GB:1
+    - accelerators: B200:1
       cloud: lambda
-    - accelerators: A100-80GB:1
+    - accelerators: B200:1
       cloud: runpod
-    - accelerators: A100-80GB:1
+    - accelerators: B200:1
       cloud: vast
-    - accelerators: H100:1
+    - accelerators: B200:1
+      cloud: nebius
+    - accelerators: H200:1
       cloud: lambda
-    - accelerators: H100:1
+    - accelerators: H200:1
       cloud: runpod
-    - accelerators: H100:1
+    - accelerators: H200:1
       cloud: vast
-    - accelerators: L40S:1
-      cloud: lambda
-    - accelerators: L40S:1
-      cloud: runpod
+    - accelerators: H200:1
+      cloud: nebius
 
 num_nodes: 1
 
@@ -60,8 +60,12 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
 
-  # Install vLLM + dependencies
-  uv sync --extra vllm
+  # Install base deps (without vllm extra - repo pins 0.13.0 which lacks Qwen3.5)
+  uv sync
+
+  # Qwen3.5 requires vLLM nightly (until 0.17.0 release) and transformers from source
+  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  uv pip install "transformers @ git+https://github.com/huggingface/transformers.git@main"
   uv pip install openai
 
   # Install OpenEnv for Fleet environment access
@@ -119,13 +123,7 @@ run: |
 
   # Run eval
   echo "Starting evaluation: $NUM_TASKS tasks x $ROLLOUTS_PER_TASK rollouts"
-  uv run --isolated --extra vllm \
-    --with openai \
-    --with "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" \
-    --with "fleet-python" \
-    --with "logfire" \
-    --with "mcp>=1.0.0" \
-    -m integrations.fleet.entrypoints.eval_baseline \
+  python -m integrations.fleet.entrypoints.eval_baseline \
     --tasks-file "$TASKS_FILE" \
     --model "$MODEL" \
     --num-tasks "$NUM_TASKS" \
