@@ -103,35 +103,18 @@ setup: |
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
-  # Detect CUDA_HOME from standard paths, then search broadly
+  # Detect CUDA_HOME from standard paths, then fall back to pip package
   CUDA_HOME=""
-  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2 /usr/local/cuda-12.1; do
+  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2; do
     if [ -x "$d/bin/nvcc" ]; then
       CUDA_HOME="$d"
       break
     fi
   done
   if [ -z "$CUDA_HOME" ]; then
-    NVCC_BIN=$(find /usr -name nvcc -type f 2>/dev/null | head -1 || true)
-    if [ -n "$NVCC_BIN" ]; then
-      CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
-    fi
-  fi
-  if [ -z "$CUDA_HOME" ]; then
-    echo "ERROR: CUDA toolkit (nvcc) not found. FlashInfer JIT requires nvcc for GatedDeltaNet kernels."
-    echo "Searching for CUDA directories..."
-    ls -la /usr/local/ 2>/dev/null || true
-    find /usr -name "cuda*" -maxdepth 3 2>/dev/null | head -20 || true
-    echo "Attempting pip install of nvidia-cuda-nvcc..."
+    echo "nvcc not found in /usr/local/cuda-*. Installing via pip..."
     uv pip install nvidia-cuda-nvcc-cu12
-    NVCC_BIN=$(find "$(python -c 'import site; print(site.getsitepackages()[0])')" -name nvcc -type f 2>/dev/null | head -1 || true)
-    if [ -n "$NVCC_BIN" ]; then
-      CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
-    fi
-  fi
-  if [ -z "$CUDA_HOME" ]; then
-    echo "FATAL: Cannot find nvcc anywhere"
-    exit 1
+    CUDA_HOME=$(python -c "import nvidia.cuda_nvcc, os; print(os.path.dirname(nvidia.cuda_nvcc.__file__))")
   fi
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
