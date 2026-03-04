@@ -135,5 +135,18 @@ run: |
   echo "Eval complete. Results in $OUTPUT_DIR"
   ls -la "$OUTPUT_DIR"
 
+  # Print summary to GHA logs
+  echo "===== SUMMARY ====="
+  cat "$OUTPUT_DIR"/summary_*.json || true
+  echo "===== TRAJECTORIES ====="
+  wc -l "$OUTPUT_DIR"/*.jsonl || true
+
+  # Upload results to S3
+  pip install awscli 2>/dev/null || true
+  S3_PATH="s3://skyrl-trajectories/evals/eval-baseline-qwen3-8b/$(date -u +%Y%m%d_%H%M%S)"
+  echo "Uploading results to $S3_PATH..."
+  aws s3 cp "$OUTPUT_DIR" "$S3_PATH" --recursive
+  echo "Results uploaded to $S3_PATH"
+
   # Cleanup
   kill $VLLM_PID 2>/dev/null || true
