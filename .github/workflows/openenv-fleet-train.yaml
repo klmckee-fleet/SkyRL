@@ -170,8 +170,8 @@ jobs:
 
           echo "Command: $LAUNCH_CMD"
 
-          # Retry logic: 4 attempts with 2-4-8 minute intervals
-          MAX_ATTEMPTS=4
+          # Retry logic: 1 attempt (reduced for faster iteration during debugging)
+          MAX_ATTEMPTS=1
           RETRY_DELAYS=(120 240 480)  # 2, 4, 8 minutes in seconds
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do

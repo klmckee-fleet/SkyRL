@@ -104,12 +104,15 @@ class HFModelWrapper(nn.Module):
 
                 model_class = AutoLigerKernelForCausalLM
             elif is_vl_model:
-                from transformers import AutoModelForVision2Seq
+                try:
+                    from transformers import AutoModelForImageTextToText
 
-                model_class = AutoModelForVision2Seq
-                logger.info(
-                    f"Detected VL model config: {model_config.__class__.__name__}, using AutoModelForVision2Seq"
-                )
+                    model_class = AutoModelForImageTextToText
+                except ImportError:
+                    from transformers import AutoModelForVision2Seq
+
+                    model_class = AutoModelForVision2Seq
+                logger.info(f"Detected VL model config: {model_config.__class__.__name__}, using {model_class.__name__}")
             else:
                 model_class = AutoModelForCausalLM
 
