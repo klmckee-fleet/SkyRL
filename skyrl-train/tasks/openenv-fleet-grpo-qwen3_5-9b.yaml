@@ -119,10 +119,10 @@ setup: |
     echo "nvcc not found on system. Installing CUDA toolkit from NVIDIA apt repo..."
     apt-get update -qq
     UBUNTU_VER=$(lsb_release -rs 2>/dev/null | tr -d '.' || echo "2204")
-    ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
-    KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VER}/${ARCH}/cuda-keyring_1.1-1_all.deb"
+    KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VER}/x86_64/cuda-keyring_1.1-1_all.deb"
     echo "Installing CUDA keyring from $KEYRING_URL"
-    wget -qO /tmp/cuda-keyring.deb "$KEYRING_URL" || curl -sLo /tmp/cuda-keyring.deb "$KEYRING_URL"
+    wget -qO /tmp/cuda-keyring.deb "$KEYRING_URL" 2>&1 || curl -sLo /tmp/cuda-keyring.deb "$KEYRING_URL"
+    file /tmp/cuda-keyring.deb
     dpkg -i /tmp/cuda-keyring.deb
     apt-get update -qq
     apt-get install -y --no-install-recommends cuda-nvcc-12-8
