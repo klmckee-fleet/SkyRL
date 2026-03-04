@@ -16,7 +16,7 @@ resources:
   disk_size: 750
   ports: 6479
   any_of:
-    # 8x preferred
+    # 8x required for Qwen3.5-9B VL training (8 vLLM engines + FSDP2)
     - accelerators: H200-SXM:8
       cloud: runpod
     - accelerators: B200:8
@@ -26,17 +26,6 @@ resources:
     - accelerators: H200-SXM:8
       cloud: nebius
     - accelerators: H200-SXM:8
-      cloud: lambda
-    # 4x fallback
-    - accelerators: H200-SXM:4
-      cloud: runpod
-    - accelerators: B200:4
-      cloud: runpod
-    - accelerators: B200:4
-      cloud: lambda
-    - accelerators: H200-SXM:4
-      cloud: nebius
-    - accelerators: H200-SXM:4
       cloud: lambda
 
 num_nodes: 1
@@ -55,7 +44,7 @@ envs:
   DIFFICULTY: ""
   MODALITY: "computer_use"
   MAX_TURNS: 50
-  MAX_INPUT_LENGTH: 65536
+  MAX_INPUT_LENGTH: 131072
   MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 10
   RUN_ID: ""
@@ -236,7 +225,7 @@ run: |
     generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.7 \
+    generator.gpu_memory_utilization=0.85 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-browser-use-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \

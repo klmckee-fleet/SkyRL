@@ -164,6 +164,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             self.base_conversation,
             add_generation_prompt=False,
             tokenize=True,
+            return_dict=False,
             **self.generator_cfg.chat_template_kwargs,
         )
         # We remove tokens after the last EOS token so that it can be captured in `observation_ids`.
@@ -229,6 +230,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                 add_generation_prompt=add_generation_prompt,
                 tokenize=True,
                 chat_template=chat_template,
+                return_dict=False,
                 **kwargs,
             )
 
@@ -264,7 +266,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         is_step_wise: bool,
     ) -> Union[TrajectoryOutput, StepWiseOutput]:
         """Create a zero-reward output for trajectories cancelled by batch timeout."""
-        prompt_ids = self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True)
+        prompt_ids = self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True, return_dict=False)
         output = TrajectoryOutput(
             response_ids=[self.tokenizer.eos_token_id],
             reward=zero_reward,
@@ -840,6 +842,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                     [*self.base_conversation, *new_obs],
                     add_generation_prompt=not is_done,
                     tokenize=True,
+                    return_dict=False,
                     **self.generator_cfg.chat_template_kwargs,
                 )[len(self.base_conversation_token_ids) :]
             elif not is_done:
@@ -957,6 +960,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                 init_prompts,
                 add_generation_prompt=True,
                 tokenize=True,
+                return_dict=False,
             )
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 

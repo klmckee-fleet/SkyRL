@@ -148,9 +148,9 @@ def get_generation_prompt_ids(tokenizer) -> List[int]:
     """
     Helper function to get the generation prompt ids for a given tokenizer.
     """
-    empty_user = tokenizer.apply_chat_template([{"role": "user", "content": ""}], tokenize=True)
+    empty_user = tokenizer.apply_chat_template([{"role": "user", "content": ""}], tokenize=True, return_dict=False)
     empty_user_with_generation_prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}], add_generation_prompt=True, tokenize=True
+        [{"role": "user", "content": ""}], add_generation_prompt=True, tokenize=True, return_dict=False
     )
 
     generation_prompt_ids = empty_user_with_generation_prompt[len(empty_user) :]
@@ -436,6 +436,7 @@ def encode_messages_subset(messages: ConversationType, tokenizer):
         base_conversation,
         add_generation_prompt=False,
         tokenize=True,
+        return_dict=False,
     )
 
     full_conversation = base_conversation + messages
@@ -443,6 +444,7 @@ def encode_messages_subset(messages: ConversationType, tokenizer):
         full_conversation,
         add_generation_prompt=False,
         tokenize=True,
+        return_dict=False,
     )
     conversation_token_ids = full_conversation_token_ids[len(base_conversation_token_ids) :]
     return conversation_token_ids
@@ -800,5 +802,6 @@ def apply_chat_template_with_images(
             add_generation_prompt=add_generation_prompt,
             tokenize=True,
             chat_template=chat_template,
+            return_dict=False,
             **kwargs,
         )
