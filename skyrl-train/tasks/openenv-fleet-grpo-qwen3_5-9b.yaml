@@ -103,10 +103,9 @@ setup: |
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
-  # vLLM nightly ships torch 2.10+cu130 (CUDA 13.0), so we need CUDA 13 nvcc
-  # nvidia-cuda-nvcc-cu12 does NOT contain nvcc (only ptxas); nvidia-cuda-nvcc v13+ DOES
+  # pip CUDA packages are incomplete (missing nv/target headers); use NVIDIA apt repo instead
   CUDA_HOME=""
-  for d in /usr/local/cuda /usr/local/cuda-13.0 /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4; do
+  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4; do
     if [ -x "$d/bin/nvcc" ]; then
       CUDA_HOME="$d"
       break
@@ -117,17 +116,17 @@ setup: |
     CUDA_HOME=$(dirname "$(dirname "$NVCC_PATH")")
   fi
   if [ -z "$CUDA_HOME" ]; then
-    echo "nvcc not found on system. Installing nvidia-cuda-nvcc (CUDA 13) via pip..."
-    uv pip install nvidia-cuda-nvcc
-    NVCC_BIN=$(find "$(pwd)/.venv" -name "nvcc" -not -name "*.py" -type f 2>/dev/null | head -1 || true)
-    if [ -z "$NVCC_BIN" ]; then
-      echo "FATAL: nvcc binary not found after pip install"
-      find "$(pwd)/.venv" -path "*/nvidia/*" -name "nvcc*" 2>/dev/null || true
-      find "$(pwd)/.venv" -path "*/cu1*/*" -maxdepth 8 2>/dev/null | head -30 || true
-      exit 1
-    fi
-    chmod +x "$NVCC_BIN"
-    CUDA_HOME=$(cd "$(dirname "$(dirname "$NVCC_BIN")")" && pwd)
+    echo "nvcc not found on system. Installing CUDA toolkit from NVIDIA apt repo..."
+    apt-get update -qq
+    UBUNTU_VER=$(lsb_release -rs 2>/dev/null | tr -d '.' || echo "2204")
+    ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+    KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VER}/${ARCH}/cuda-keyring_1.1-1_all.deb"
+    echo "Installing CUDA keyring from $KEYRING_URL"
+    wget -qO /tmp/cuda-keyring.deb "$KEYRING_URL" || curl -sLo /tmp/cuda-keyring.deb "$KEYRING_URL"
+    dpkg -i /tmp/cuda-keyring.deb
+    apt-get update -qq
+    apt-get install -y --no-install-recommends cuda-nvcc-12-8
+    CUDA_HOME="/usr/local/cuda-12.8"
   fi
   export CUDA_HOME
   export PATH="$CUDA_HOME/bin:$PATH"
