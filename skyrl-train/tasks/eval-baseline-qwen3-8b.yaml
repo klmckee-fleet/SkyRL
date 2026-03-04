@@ -68,7 +68,7 @@ setup: |
   uv pip install openai
 
   # Install vLLM nightly (required for Qwen3.5 / qwen3_5 architecture)
-  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  pip install -U vllm --extra-index-url https://wheels.vllm.ai/nightly --pre
 
   # Install OpenEnv for Fleet environment access
   uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" \
