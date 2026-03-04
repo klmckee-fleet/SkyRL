@@ -104,21 +104,30 @@ setup: |
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
   # SkyPilot containers may not have /usr/local/cuda; detect from common paths
+  CUDA_HOME=""
   for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2; do
     if [ -x "$d/bin/nvcc" ]; then
-      export CUDA_HOME="$d"
-      export PATH="$CUDA_HOME/bin:$PATH"
+      CUDA_HOME="$d"
       break
     fi
   done
-  if ! command -v nvcc &>/dev/null; then
+  if [ -z "$CUDA_HOME" ] && ! command -v nvcc &>/dev/null; then
     echo "nvcc not found in standard paths, installing CUDA toolkit..."
     apt-get update -qq && apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
   fi
-  echo "CUDA_HOME=${CUDA_HOME:-not set}, nvcc=$(which nvcc 2>/dev/null || echo 'not found')"
+  if [ -z "$CUDA_HOME" ]; then
+    NVCC_BIN=$(which nvcc 2>/dev/null || true)
+    if [ -n "$NVCC_BIN" ]; then
+      CUDA_HOME=$(dirname "$(dirname "$NVCC_BIN")")
+    else
+      CUDA_HOME="/usr/local/cuda"
+    fi
+  fi
+  export CUDA_HOME
+  export PATH="$CUDA_HOME/bin:$PATH"
+  echo "CUDA_HOME=$CUDA_HOME"
   nvcc --version || { echo "ERROR: nvcc required for FlashInfer JIT (GatedDeltaNet kernels)"; exit 1; }
-  # Persist CUDA_HOME for the run section (separate shell session)
-  echo "export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}" > "$HOME/.cuda_env"
+  echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli
 
