@@ -85,10 +85,14 @@ setup: |
 
   uv venv --python 3.12 --seed
   source .venv/bin/activate
-  uv sync --extra vllm --extra-index-url https://wheels.vllm.ai/nightly
+  uv sync --extra vllm
+  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
+  # Done via pip install to avoid poisoning uv resolver for other extras
+  # (mcore pins vllm==0.13.0/torch==2.9.0, sglang pins transformers==4.52.3)
+  uv pip install "vllm>=0.16.1.dev0" "torch==2.10.0" "transformers>=4.57.0" --extra-index-url https://wheels.vllm.ai/nightly
   uv pip install wandb boto3 awscli
 
-  uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
+  uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
 
   mkdir -p $HOME/data/fleet
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
@@ -136,15 +140,9 @@ run: |
   TOTAL_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
 
   # VL step-wise training (images accumulate across turns)
-  uv run --isolated --extra "$INFERENCE_BACKEND" \
-    --extra-index-url https://wheels.vllm.ai/nightly \
-    --with "litellm>=1.75.5" \
-    --with "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" \
-    --with "fleet-python" \
-    --with "logfire" \
-    --with "mcp>=1.0.0" \
-    --with "boto3" \
-    -m integrations.fleet.entrypoints.main_fleet \
+  # Use python directly since venv was set up in setup with nightly overrides
+  # (uv run --isolated would re-resolve and conflict with nightly pins)
+  python -m integrations.fleet.entrypoints.main_fleet \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/validation.parquet']" \
     environment.env_class=fleet_task \
