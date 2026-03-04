@@ -78,8 +78,10 @@ async def collect_rollout(
     rollout_start = time.time()
     task_key = task_config.get("task_key") or task_config.get("key")
 
-    env_config = OmegaConf.create({"tasks_file": tasks_file, "ttl_seconds": 7200})
-    extras = {"task_key": task_key, "max_turns": max_turns}
+    env_config = OmegaConf.create(
+        {"tasks_file": tasks_file, "ttl_seconds": 7200, "enable_context_tools": True}
+    )
+    extras = {"task_key": task_key, "max_turns": max_turns, "max_output_chars": 10000}
     env = FleetTaskEnv(env_config=env_config, extras=extras)
 
     try:
@@ -94,8 +96,21 @@ async def collect_rollout(
         total_gen_time = 0.0
         total_step_time = 0.0
 
+        # Approximate token budget: leave room for generation
+        max_context_tokens = 32768 - max_generate_length
+
         while not done and env.turns < max_turns:
             turn_num = env.turns + 1
+
+            # Rough token estimate (~4 chars per token) to avoid 400 errors
+            total_chars = sum(len(m.get("content", "") or "") for m in env.chat_history)
+            approx_tokens = total_chars // 4
+            if approx_tokens > max_context_tokens:
+                logger.warning(
+                    f"[{task_key}] turn {turn_num}: context too long "
+                    f"(~{approx_tokens} tokens), ending rollout"
+                )
+                break
 
             # Generate with vLLM
             gen_start = time.time()
@@ -144,7 +159,9 @@ async def collect_rollout(
             "turns": env.turns,
             "tool_calls": env.tool_calls,
             "tool_errors": env.tool_errors,
-            "stop_reason": "agent_done" if done else "max_turns",
+            "stop_reason": "agent_done"
+            if done
+            else ("context_overflow" if approx_tokens > max_context_tokens else "max_turns"),
             "duration": round(duration, 2),
             "total_gen_time": round(total_gen_time, 2),
             "total_step_time": round(total_step_time, 2),
