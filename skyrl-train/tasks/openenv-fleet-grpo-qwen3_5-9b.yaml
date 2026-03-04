@@ -94,7 +94,7 @@ setup: |
   # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
   # Done via pip install to avoid poisoning uv resolver for other extras
   # (mcore pins vllm==0.13.0/torch==2.9.0, sglang pins transformers==4.52.3)
-  uv pip install "vllm>=0.16.1.dev0" "torch==2.10.0" "torchvision" "transformers>=4.57.0" --extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match
+  uv pip install "vllm>=0.16.1.dev0" "torch==2.10.0" "torchvision" "transformers>=4.57.0" --extra-index-url https://wheels.vllm.ai/nightly --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
   uv pip install wandb boto3 awscli
 
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
