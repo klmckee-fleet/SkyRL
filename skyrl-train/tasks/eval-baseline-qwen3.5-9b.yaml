@@ -1,7 +1,7 @@
-# Baseline Evaluation: Qwen3.5-9B on Fleet Computer Use Tasks
+# Baseline Evaluation: Qwen3-8B on Fleet Computer Use Tasks
 # Usage: sky launch tasks/eval-baseline-qwen3.5-9b.yaml --env FLEET_API_KEY=<key>
 #
-# Serves Qwen3.5-9B via vLLM and runs inference-only evaluation on 12 tasks
+# Serves Qwen3-8B via vLLM and runs inference-only evaluation on 12 tasks
 # with 10 rollouts each. Results saved to ~/eval_results/.
 
 name: fleet-eval-baseline
@@ -35,7 +35,7 @@ workdir:
 envs:
   FLEET_API_KEY: ""
   MODALITY: "computer_use"
-  MODEL: "Qwen/Qwen3.5-9B"
+  MODEL: "Qwen/Qwen3-8B"
   NUM_TASKS: "12"
   ROLLOUTS_PER_TASK: "10"
   MAX_TURNS: "50"
@@ -60,12 +60,8 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
 
-  # Install base deps (without vllm extra - repo pins 0.13.0 which lacks Qwen3.5)
-  uv sync
-
-  # Qwen3.5 requires vLLM nightly (until 0.17.0 release) and transformers from source
-  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
-  uv pip install "transformers @ git+https://github.com/huggingface/transformers.git@main"
+  # Install deps with repo-pinned vLLM 0.13.0 (supports Qwen3 architecture)
+  uv sync --extra vllm
   uv pip install openai
 
   # Install OpenEnv for Fleet environment access
