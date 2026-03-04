@@ -94,9 +94,14 @@ setup: |
   # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
   # Done via pip install to avoid poisoning uv resolver for other extras
   # (mcore pins vllm==0.13.0/torch==2.9.0, sglang pins transformers==4.52.3)
-  uv pip install "vllm>=0.16.1.dev0" "torch==2.10.0" "transformers>=4.57.0" --extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match
-  # Reinstall torchvision from cu128 index to match torch 2.10.0 (uv sync installed it for torch 2.9.0)
-  uv pip install "torchvision" --extra-index-url https://download.pytorch.org/whl/cu128 --reinstall-package torchvision
+  uv pip install "vllm>=0.16.1.dev0" "transformers>=4.57.0" --extra-index-url https://wheels.vllm.ai/nightly --index-strategy unsafe-best-match
+  # Reinstall torch+torchvision together from cu128 to ensure ABI compatibility
+  # uv sync installed torchvision for torch 2.9.0; vllm nightly pulled torch 2.10.0
+  # Using pip (not uv pip) with --force-reinstall to bypass resolution caching
+  TORCH_VERSION=$(python -c "import torch; print(torch.__version__.split('+')[0])")
+  echo "Installed torch version: $TORCH_VERSION"
+  pip install "torch==${TORCH_VERSION}" torchvision --force-reinstall --no-deps --index-url https://download.pytorch.org/whl/cu128 || pip install "torch==${TORCH_VERSION}" torchvision --force-reinstall --no-deps --index-url https://download.pytorch.org/whl/nightly/cu128
+  python -c "import torch; import torchvision; print(f'Verified: torch={torch.__version__}, torchvision={torchvision.__version__}')"
   uv pip install wandb boto3 awscli
 
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
