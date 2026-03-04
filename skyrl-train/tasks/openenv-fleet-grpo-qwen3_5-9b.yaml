@@ -17,16 +17,28 @@ resources:
   ports: 6479
   any_of:
     # 8x required for Qwen3.5-9B VL training (8 vLLM engines + FSDP2)
-    - accelerators: H200-SXM:8
-      cloud: runpod
-    - accelerators: B200:8
-      cloud: runpod
+    # B200:8 across all providers
     - accelerators: B200:8
       cloud: lambda
-    - accelerators: H200-SXM:8
+    - accelerators: B200:8
+      cloud: runpod
+    - accelerators: B200:8
+      cloud: vast
+    - accelerators: B200:8
+      cloud: primeintellect
+    - accelerators: B200:8
       cloud: nebius
-    - accelerators: H200-SXM:8
+    # Fallback to H200:8
+    - accelerators: H200:8
       cloud: lambda
+    - accelerators: H200:8
+      cloud: runpod
+    - accelerators: H200:8
+      cloud: vast
+    - accelerators: H200:8
+      cloud: primeintellect
+    - accelerators: H200:8
+      cloud: nebius
 
 num_nodes: 1
 
