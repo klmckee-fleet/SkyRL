@@ -9,21 +9,21 @@ name: fleet-eval-baseline
 resources:
   disk_size: 100
   any_of:
-    - accelerators: B200:1
+    - accelerators: H100:1
       cloud: lambda
-    - accelerators: B200:1
+    - accelerators: H100:1
       cloud: runpod
-    - accelerators: B200:1
+    - accelerators: H100:1
       cloud: vast
-    - accelerators: B200:1
+    - accelerators: H100:1
       cloud: nebius
-    - accelerators: H200:1
+    - accelerators: H100-SXM:1
       cloud: lambda
-    - accelerators: H200:1
+    - accelerators: H100-SXM:1
       cloud: runpod
-    - accelerators: H200:1
+    - accelerators: H100-SXM:1
       cloud: vast
-    - accelerators: H200:1
+    - accelerators: H100-SXM:1
       cloud: nebius
 
 num_nodes: 1
@@ -39,7 +39,7 @@ envs:
   NUM_TASKS: "12"
   ROLLOUTS_PER_TASK: "10"
   MAX_TURNS: "50"
-  MAX_CONCURRENT: "8"
+  MAX_CONCURRENT: "16"
   TEMPERATURE: "1.0"
   # Not used by eval but expected by the GHA workflow
   AWS_ACCESS_KEY_ID: ""
@@ -54,6 +54,9 @@ setup: |
     echo "ERROR: FLEET_API_KEY is required"
     exit 1
   fi
+
+  # Install Python dev headers (needed by Triton to compile CUDA utils)
+  sudo apt-get update && sudo apt-get install -y python3-dev
 
   cd skyrl-train
 
