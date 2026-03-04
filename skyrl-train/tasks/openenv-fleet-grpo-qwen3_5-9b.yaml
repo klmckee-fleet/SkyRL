@@ -102,6 +102,24 @@ setup: |
   # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
+  # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
+  # SkyPilot containers may not have /usr/local/cuda; detect from common paths
+  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4 /usr/local/cuda-12.2; do
+    if [ -x "$d/bin/nvcc" ]; then
+      export CUDA_HOME="$d"
+      export PATH="$CUDA_HOME/bin:$PATH"
+      break
+    fi
+  done
+  if ! command -v nvcc &>/dev/null; then
+    echo "nvcc not found in standard paths, installing CUDA toolkit..."
+    apt-get update -qq && apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
+  fi
+  echo "CUDA_HOME=${CUDA_HOME:-not set}, nvcc=$(which nvcc 2>/dev/null || echo 'not found')"
+  nvcc --version || { echo "ERROR: nvcc required for FlashInfer JIT (GatedDeltaNet kernels)"; exit 1; }
+  # Persist CUDA_HOME for the run section (separate shell session)
+  echo "export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}" > "$HOME/.cuda_env"
+  echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli
 
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
@@ -129,12 +147,10 @@ run: |
   mkdir -p "$TMP_DIR"
   export TMPDIR="$TMP_DIR"
 
-  # Disable expandable_segments: CUDA IPC of expandable segments requires pidfd_getfd syscall,
-  # which is blocked by seccomp in containerized envs (RunPod). Standard cudaIpcMemHandle works fine.
-  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
-  # Disable vLLM V1 multiprocessing: V1 runs engine core in a separate process even with TP=1,
-  # triggering CUDA IPC (pidfd_getfd). Single-process mode avoids IPC entirely.
-  export VLLM_ENABLE_V1_MULTIPROCESSING=0
+  # CUDA_HOME for FlashInfer JIT compilation (GatedDeltaNet kernels)
+  source "$HOME/.cuda_env" 2>/dev/null || true
+
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
