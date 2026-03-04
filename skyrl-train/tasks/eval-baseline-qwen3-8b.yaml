@@ -100,7 +100,7 @@ run: |
     --model "$MODEL" \
     --host 0.0.0.0 \
     --port 8000 \
-    --max-model-len 40960 \
+    --max-model-len 32768 \
     --gpu-memory-utilization 0.85 \
     &
   VLLM_PID=$!
