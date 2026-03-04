@@ -94,6 +94,9 @@ setup: |
   # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
   uv pip install -U vllm "transformers>=4.57.0" --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
+  # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
+  uv pip uninstall flash-attn
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   uv pip install wandb boto3 awscli
 
@@ -157,6 +160,8 @@ run: |
     trainer.policy.model.path="Qwen/Qwen3.5-9B" \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
+    trainer.flash_attn=false \
+    trainer.use_sample_packing=false \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
     trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
     generator.num_inference_engines=$TOTAL_GPUS \
