@@ -40,7 +40,7 @@ num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: feat/qwen3.5-9b
+  ref: jyp/feat/qwen3.5-9b
 
 envs:
   WANDB_API_KEY: ""
