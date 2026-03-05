@@ -41,8 +41,6 @@ on:
           - openenv-fleet-grpo-qwen3-32b
           - openenv-fleet-grpo-qwen3-8b-step-wise
           - openenv-fleet-grpo-qwen3-vl-8b
-          - openenv-fleet-grpo-xlam-70b
-          - openenv-fleet-grpo-glm-4.7-flash
           - harbor-grpo-qwen3-8b
         default: "openenv-fleet-grpo-qwen3_5-9b"
       data_version:
