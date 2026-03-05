@@ -153,11 +153,15 @@ setup: |
   # Install OpenEnv for Fleet environment access (from branch with FleetTaskEnv)
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
 
-  # Pre-download model weights to avoid race condition when multiple workers
-  # (4 FSDP + 4 vLLM engines) all hit HuggingFace simultaneously without auth
-  echo "Pre-downloading Qwen/Qwen3.5-9B model weights..."
-  python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.5-9B')"
-  echo "Model download complete"
+  # Pre-download model weights to a local directory to avoid race condition
+  # when 4 FSDP + 4 vLLM workers all resolve HuggingFace cache simultaneously
+  MODEL_DIR="$HOME/models/Qwen3.5-9B"
+  echo "Pre-downloading Qwen/Qwen3.5-9B model weights to $MODEL_DIR..."
+  python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.5-9B', local_dir='$MODEL_DIR')"
+  echo "Model download complete. Files:"
+  ls -la "$MODEL_DIR"/*.safetensors 2>/dev/null | head -10
+  # Verify all shards present
+  python -c "import json,os,sys; idx=json.load(open('$MODEL_DIR/model.safetensors.index.json')); shards=set(idx['weight_map'].values()); missing=[s for s in shards if not os.path.exists(os.path.join('$MODEL_DIR',s))]; (print(f'ERROR: Missing shards: {missing}',file=sys.stderr) or sys.exit(1)) if missing else print(f'All {len(shards)} shards verified OK')"
 
   # Download dataset from S3
   mkdir -p $HOME/data/fleet
@@ -223,7 +227,7 @@ run: |
     environment.skyrl_gym.fleet_task.tasks_file="$TASKS_FILE" \
     environment.skyrl_gym.fleet_task.ttl_seconds=900 \
     trainer.algorithm.advantage_estimator="grpo" \
-    trainer.policy.model.path="Qwen/Qwen3.5-9B" \
+    trainer.policy.model.path="$HOME/models/Qwen3.5-9B" \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
     trainer.flash_attn=false \
