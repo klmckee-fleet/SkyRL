@@ -100,13 +100,13 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
-  # Override with vllm nightly pinned to Qwen3.5 support commit (PR #34110, merged Feb 9)
-  # Using per-commit wheel URL to ensure Qwen3_5ForConditionalGeneration is in the registry
+  # Override with vllm nightly (Qwen3.5 support requires nightly, not in stable until v0.17.0)
+  # Use --index-url (not --extra-index-url) to force nightly instead of stable from PyPI
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  VLLM_COMMIT="9562912cead1f11e8540fb91306c5cbda66f0007"
-  uv pip install -U vllm --torch-backend=auto --extra-index-url "https://wheels.vllm.ai/${VLLM_COMMIT}"
+  uv pip install -U vllm --torch-backend=auto --index-url https://wheels.vllm.ai/nightly
   python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-  python -c "import importlib; m=importlib.import_module('vllm.model_executor.models.qwen3_5'); print(f'Qwen3.5 vLLM module OK: {m.__file__}')" || { echo "FATAL: vLLM does not have Qwen3.5 model module"; exit 1; }
+  # Verify Qwen3.5 support exists (either native qwen3_5 module or Qwen3Next mapping)
+  python -c "from vllm.model_executor.models import _MODELS; q35=[k for k in _MODELS if 'Qwen3_5' in k or 'Qwen3Next' in k]; print(f'Qwen3.5 models in vLLM: {q35}'); print('WARNING: No native Qwen3.5, will patch config.json') if not q35 else None"
   # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
   uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
@@ -166,6 +166,8 @@ setup: |
   ls -la "$MODEL_DIR"/*.safetensors 2>/dev/null | head -10
   # Verify all shards present
   python -c "import json,os,sys; idx=json.load(open('$MODEL_DIR/model.safetensors.index.json')); shards=set(idx['weight_map'].values()); missing=[s for s in shards if not os.path.exists(os.path.join('$MODEL_DIR',s))]; (print(f'ERROR: Missing shards: {missing}',file=sys.stderr) or sys.exit(1)) if missing else print(f'All {len(shards)} shards verified OK')"
+  # Check if vLLM has native Qwen3.5 support; if not, patch config.json for TransformersForCausalLM
+  python -c "import json; from vllm.model_executor.models import _MODELS; native='Qwen3_5ForConditionalGeneration' in _MODELS; print(f'Native Qwen3.5: {native}'); cfg_path='$MODEL_DIR/config.json'; cfg=json.load(open(cfg_path)); orig=cfg.get('architectures',[]); (cfg.update({'architectures':['TransformersForCausalLM']}) or json.dump(cfg,open(cfg_path,'w'),indent=2) or print(f'Patched: {orig} -> TransformersForCausalLM')) if not native else print('Using native vLLM Qwen3.5')"
 
   # Download dataset from S3
   mkdir -p $HOME/data/fleet
@@ -279,7 +281,6 @@ run: |
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.8 \
     +generator.engine_init_kwargs.max_model_len=32768 \
-    +generator.engine_init_kwargs.model_impl=transformers \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
