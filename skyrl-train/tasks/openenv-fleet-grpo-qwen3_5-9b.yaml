@@ -100,9 +100,13 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
-  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
+  # Override with vllm nightly pinned to Qwen3.5 support commit (PR #34110, merged Feb 9)
+  # Using per-commit wheel URL to ensure Qwen3_5ForConditionalGeneration is in the registry
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  VLLM_COMMIT="9562912cead1f11e8540fb91306c5cbda66f0007"
+  uv pip install -U vllm --torch-backend=auto --extra-index-url "https://wheels.vllm.ai/${VLLM_COMMIT}"
+  python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
+  python -c "import importlib; m=importlib.import_module('vllm.model_executor.models.qwen3_5'); print(f'Qwen3.5 vLLM module OK: {m.__file__}')" || { echo "FATAL: vLLM does not have Qwen3.5 model module"; exit 1; }
   # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
   uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
