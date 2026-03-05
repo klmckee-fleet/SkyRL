@@ -168,7 +168,7 @@ run: |
     trainer.placement.ref_num_gpus_per_node=1 \
     generator.num_inference_engines=1 \
     generator.inference_engine_tensor_parallel_size=1 \
-    trainer.eval_batch_size=24 \
+    trainer.eval_batch_size=8 \
     trainer.max_prompt_length=2048 \
     generator.max_input_length=$MAX_INPUT_LENGTH \
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
