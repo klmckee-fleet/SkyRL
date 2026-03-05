@@ -109,19 +109,12 @@ setup: |
   python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
   # Verify Qwen3.5 support exists (either native qwen3_5 module or Qwen3Next mapping)
   python -c "from vllm.model_executor.models import _MODELS; q35=[k for k in _MODELS if 'Qwen3_5' in k or 'Qwen3Next' in k]; print(f'Qwen3.5 models in vLLM: {q35}'); print('WARNING: No native Qwen3.5, will patch config.json') if not q35 else None"
-  # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
-  uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
   # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
   uv pip uninstall flash-attn
   # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
-  # Patch: vLLM nightly (dev267+) imports ALLOWED_LAYER_TYPES from transformers, but
-  # transformers main split it into ALLOWED_ATTENTION_LAYER_TYPES + ALLOWED_MLP_LAYER_TYPES.
-  # Add the alias so vLLM can import it.
-  python -c "import transformers.configuration_utils as cu, inspect; src=inspect.getfile(cu); has_it=hasattr(cu,'ALLOWED_LAYER_TYPES'); alias=getattr(cu,'ALLOWED_ATTENTION_LAYER_TYPES',None); print(f'ALLOWED_LAYER_TYPES exists={has_it}'); (not has_it and alias and (open(src,'a').write(chr(10)+'ALLOWED_LAYER_TYPES = ALLOWED_ATTENTION_LAYER_TYPES'+chr(10)) or print(f'Patched {src}'))) if not has_it and alias else None"
-  python -c "from transformers.configuration_utils import ALLOWED_LAYER_TYPES; print('ALLOWED_LAYER_TYPES OK:', ALLOWED_LAYER_TYPES)"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
   # pip CUDA packages are incomplete (missing nv/target headers); use NVIDIA apt repo instead
   CUDA_HOME=""
@@ -158,6 +151,15 @@ setup: |
 
   # Install OpenEnv for Fleet environment access (from branch with FleetTaskEnv)
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
+
+  # transformers from source: Qwen3.5 model type requires transformers>=4.58.0 (not in PyPI stable).
+  # MUST be installed LAST because litellm pins transformers<5.0 and would downgrade it.
+  uv pip install -U --no-deps "transformers @ git+https://github.com/huggingface/transformers.git"
+  python -c "import transformers; print(f'transformers={transformers.__version__}')"
+  # Patch: vLLM nightly imports ALLOWED_LAYER_TYPES from transformers, but
+  # transformers main split it into ALLOWED_ATTENTION_LAYER_TYPES + ALLOWED_MLP_LAYER_TYPES.
+  python -c "import transformers.configuration_utils as cu, inspect; src=inspect.getfile(cu); has_it=hasattr(cu,'ALLOWED_LAYER_TYPES'); alias=getattr(cu,'ALLOWED_ATTENTION_LAYER_TYPES',None); print(f'ALLOWED_LAYER_TYPES exists={has_it}'); (not has_it and alias and (open(src,'a').write(chr(10)+'ALLOWED_LAYER_TYPES = ALLOWED_ATTENTION_LAYER_TYPES'+chr(10)) or print(f'Patched {src}'))) if not has_it and alias else None"
+  python -c "from transformers.configuration_utils import ALLOWED_LAYER_TYPES; print('ALLOWED_LAYER_TYPES OK:', ALLOWED_LAYER_TYPES)"
 
   # Pre-download model weights to a local directory to avoid race condition
   # when 4 FSDP + 4 vLLM workers all resolve HuggingFace cache simultaneously
