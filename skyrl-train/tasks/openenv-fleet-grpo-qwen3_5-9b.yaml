@@ -7,6 +7,8 @@
 # GPUs: 4x B200/H200 — text-only fits like 8B (no vision encoder active)
 #
 # NOTE: Requires vLLM nightly (>=0.16.1.dev0) — Qwen3.5 support not in stable until v0.17.0
+# NOTE: language_model_only=true required — Qwen3.5 arch is Qwen3_5ForConditionalGeneration (multimodal)
+#       This flag tells vLLM to skip the vision encoder and use text-only path
 #
 # v0.1: Initial Qwen3.5-9B tool_use config adapted from CU version
 
@@ -280,7 +282,8 @@ run: |
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.8 \
-    +generator.engine_init_kwargs.max_model_len=32768 \
+    +generator.engine_init_kwargs.max_model_len=73728 \
+    +generator.engine_init_kwargs.language_model_only=true \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
