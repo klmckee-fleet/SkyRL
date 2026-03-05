@@ -18,43 +18,59 @@ resources:
   disk_size: 500
   ports: 6479
   any_of:
-    # 4x GPUs for text-only (preferred — same as Qwen3-8B)
+    # # 4x GPUs for text-only (preferred — same as Qwen3-8B)
+    # - accelerators: B200:4
+    #   cloud: lambda
+    #   memory: 750+
+    # - accelerators: B200:4
+    #   cloud: runpod
+    #   memory: 750+
+    # - accelerators: B200:4
+    #   cloud: primeintellect
+    #   memory: 750+
+    # - accelerators: H200-SXM:4
+    #   cloud: lambda
+    #   memory: 750+
+    # - accelerators: H200-SXM:4
+    #   cloud: runpod
+    #   memory: 750+
+    # - accelerators: H200-SXM:4
+    #   cloud: vast
+    #   memory: 750+
+    # - accelerators: H200-SXM:4
+    #   cloud: primeintellect
+    #   memory: 750+
+    # GCP spot fallback (preemptible, 64 GPU quota per region)
     - accelerators: B200:4
-      cloud: lambda
+      cloud: gcp
+      use_spot: true
       memory: 750+
-    - accelerators: B200:4
-      cloud: runpod
+    - accelerators: H200:4
+      cloud: gcp
+      use_spot: true
       memory: 750+
-    - accelerators: B200:4
-      cloud: primeintellect
-      memory: 750+
-    - accelerators: H200-SXM:4
-      cloud: lambda
-      memory: 750+
-    - accelerators: H200-SXM:4
-      cloud: runpod
-      memory: 750+
-    - accelerators: H200-SXM:4
-      cloud: vast
-      memory: 750+
-    - accelerators: H200-SXM:4
-      cloud: primeintellect
-      memory: 750+
-    # 8x GPUs fallback (when 4x capacity is exhausted)
-    - accelerators: B200:8
-      cloud: primeintellect
-    - accelerators: B200:8
-      cloud: lambda
-    - accelerators: B200:8
-      cloud: runpod
-    - accelerators: H100:8
-      cloud: lambda
-    - accelerators: H100:8
-      cloud: runpod
-    - accelerators: A100-80GB:8
-      cloud: lambda
-    - accelerators: A100-80GB:8
-      cloud: runpod
+    # # 8x GPUs fallback (when 4x capacity is exhausted)
+    # - accelerators: B200:8
+    #   cloud: primeintellect
+    # - accelerators: B200:8
+    #   cloud: lambda
+    # - accelerators: B200:8
+    #   cloud: runpod
+    # - accelerators: H100:8
+    #   cloud: lambda
+    # - accelerators: H100:8
+    #   cloud: runpod
+    # - accelerators: A100-80GB:8
+    #   cloud: lambda
+    # - accelerators: A100-80GB:8
+    #   cloud: runpod
+    # # GCP spot fallback (preemptible, 64 GPU quota per region)
+    # - accelerators: B200:8
+    #   cloud: gcp
+    #   use_spot: true
+    # - accelerators: H200:8
+    #   cloud: gcp
+    #   use_spot: true
 
 num_nodes: 1
 
