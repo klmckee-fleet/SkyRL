@@ -71,7 +71,8 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
-  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  # Pin vLLM to known working nightly (newer nightlies break with transformers-from-source)
+  uv pip install "vllm==0.16.1.dev258" --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
   uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
   uv pip uninstall flash-attn
   uv pip uninstall flashinfer-jit-cache || true
