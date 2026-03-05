@@ -1,5 +1,5 @@
-# Task Generation GRPO Training via SkyPilot - Qwen3-8B
-# Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key> --env ANTHROPIC_API_KEY=<key>
+# Task Generation GRPO Training via SkyPilot - Qwen3.5-9B
+# Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key>
 #
 # Reward: R(task) = validity_gate * (base_reward + variance + alpha * separation)
 #   validity_gate: LLM-as-a-judge binary gate (valid task? 0/1)
@@ -7,31 +7,39 @@
 #   variance:      Score variance across k Fleet harness rollouts
 #   separation:    Performance gap between models (weighted by alpha)
 #
-# Model: Qwen/Qwen3-8B
-# GPUs: 4 (FSDP2 + Adam requires >80GB per GPU with 2 GPUs)
+# Model: Qwen/Qwen3.5-9B (9B params, GatedDeltaNet, 262K native context)
+# GPUs: 4x B200/H200 (text-only fits like 8B)
 # Single-turn: one generation = one task = one episode
+#
+# NOTE: Requires vLLM nightly (>=0.16.1.dev0) — Qwen3.5 support not in stable until v0.17.0
 
-name: task-gen-grpo-qwen3-8b
+name: task-gen-grpo-qwen3-5-9b
 
 resources:
   disk_size: 512
   ports: 6479
-  memory: 350+
   any_of:
     - accelerators: B200:4
       cloud: lambda
+      memory: 750+
     - accelerators: B200:4
       cloud: runpod
+      memory: 750+
+    - accelerators: B200:4
+      cloud: primeintellect
+      memory: 750+
     - accelerators: H200-SXM:4
       cloud: lambda
+      memory: 750+
     - accelerators: H200-SXM:4
       cloud: runpod
+      memory: 750+
     - accelerators: H200-SXM:4
       cloud: vast
-    - accelerators: A100-80GB:4
-      cloud: lambda
-    - accelerators: A100-80GB:4
-      cloud: runpod
+      memory: 750+
+    - accelerators: H200-SXM:4
+      cloud: primeintellect
+      memory: 750+
 
 num_nodes: 1
 
@@ -87,6 +95,47 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
+  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
+  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
+  uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
+  # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
+  # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
+  uv pip uninstall flash-attn
+  # Remove stale flashinfer-jit-cache so flashinfer 0.6.4 regenerates it
+  uv pip uninstall flashinfer-jit-cache || true
+  python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
+  # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
+  CUDA_HOME=""
+  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4; do
+    if [ -x "$d/bin/nvcc" ]; then
+      CUDA_HOME="$d"
+      break
+    fi
+  done
+  if [ -z "$CUDA_HOME" ] && command -v nvcc &>/dev/null; then
+    NVCC_PATH=$(command -v nvcc)
+    CUDA_HOME=$(dirname "$(dirname "$NVCC_PATH")")
+  fi
+  if [ -z "$CUDA_HOME" ]; then
+    echo "nvcc not found on system. Installing CUDA toolkit from NVIDIA apt repo..."
+    apt-get update -qq
+    UBUNTU_VER=$(lsb_release -rs 2>/dev/null | tr -d '.' || echo "2204")
+    KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VER}/x86_64/cuda-keyring_1.1-1_all.deb"
+    echo "Installing CUDA keyring from $KEYRING_URL"
+    wget -qO /tmp/cuda-keyring.deb "$KEYRING_URL" 2>&1 || curl -sLo /tmp/cuda-keyring.deb "$KEYRING_URL"
+    file /tmp/cuda-keyring.deb
+    dpkg -i /tmp/cuda-keyring.deb
+    apt-get update -qq
+    apt-get install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 cuda-nvrtc-dev-12-8
+    CUDA_HOME="/usr/local/cuda-12.8"
+  fi
+  export CUDA_HOME
+  export PATH="$CUDA_HOME/bin:$PATH"
+  echo "CUDA_HOME=$CUDA_HOME"
+  "$CUDA_HOME/bin/nvcc" --version
+  echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
+  echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli supabase
 
   # Install OpenEnv (from branch) for tool discovery during dataset prep
@@ -120,12 +169,15 @@ run: |
   mkdir -p "$TMP_DIR"
   export TMPDIR="$TMP_DIR"
 
-  export PYTORCH_ALLOC_CONF=expandable_segments:True
+  # CUDA_HOME for FlashInfer JIT compilation (GatedDeltaNet kernels)
+  source "$HOME/.cuda_env" 2>/dev/null || true
+
+  # expandable_segments incompatible with vLLM memory pool in torch 2.10+
 
   DATA_DIR="$HOME/data/fleet/task_gen"
 
   # Login to Weights & Biases
-  uv run -- python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
+  python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
 
   # Ray cluster setup
   export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
@@ -142,18 +194,18 @@ run: |
   TOTAL_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
 
   # Run GRPO training with task-gen environment
-  uv run --isolated --extra "$INFERENCE_BACKEND" \
-    --with "litellm>=1.75.5" \
-    --with "boto3" \
-    --with "fleet-python>=0.2.79" \
-    -m integrations.fleet.entrypoints.main_task_gen \
+  # Use python directly since venv was set up with nightly overrides
+  # (uv run --isolated would re-resolve and conflict with nightly pins)
+  python -m integrations.fleet.entrypoints.main_task_gen \
     data.train_data="['${DATA_DIR}/train.parquet']" \
     data.val_data="['${DATA_DIR}/validation.parquet']" \
     environment.env_class=task_gen \
     trainer.algorithm.advantage_estimator="grpo" \
-    trainer.policy.model.path="Qwen/Qwen3-8B" \
+    trainer.policy.model.path="Qwen/Qwen3.5-9B" \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
+    trainer.flash_attn=false \
+    trainer.use_sample_packing=false \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
     trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
     generator.num_inference_engines=$TOTAL_GPUS \
@@ -173,7 +225,7 @@ run: |
     trainer.max_prompt_length=$MAX_INPUT_LENGTH \
     generator.max_input_length=$MAX_INPUT_LENGTH \
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
-    generator.sampling_params.temperature=1 \
+    generator.sampling_params.temperature=0.9 \
     generator.sampling_params.top_p=0.95 \
     generator.sampling_params.stop='["</task>"]' \
     generator.eval_sampling_params.stop='["</task>"]' \
@@ -189,7 +241,7 @@ run: |
     generator.use_conversation_multi_turn=false \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.7 \
+    generator.gpu_memory_utilization=0.8 \
     trainer.logger="$LOGGER" \
     trainer.project_name="task-gen-grpo" \
     trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
