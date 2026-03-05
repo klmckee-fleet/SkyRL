@@ -130,9 +130,23 @@ Datasets are stored in `s3://fleet-internal-datasets/{version}/openenv/`. Each v
 |---------|----------|----------|-------|
 | v3 | 20,557 | 20,557 | Original full dataset |
 | v4 | 15,193 | 15,193 | Filtered for quality |
-| v5 | 5,674 | 5,674 | Curated subset |
-| v51 | 2,160 | 5,479 | Removes forums-homes from CU |
-| v52 | 613 | 5,479 | CU: instacart (120) + walmart (145) + zillow (348) only — easiest envs for small models |
+| v5 | 5,674 | 5,674 | Curated subset: outlook, zillow, rops-mail, fira, pagerduty, walmart, quickbooks, dmv, instacart, forums-homes, vanta, reddit, hubspot, sentry, dropbox, fos-operations, booking, ramp, fos-revops, budget, snyk |
+| v51 | 2,160 | 5,479 | Removes forums-homes from v5 CU |
+| v52 | 613 | 5,479 | CU: instacart, walmart, zillow only — easiest envs for small models |
+
+### CU Environment Breakdown
+
+```
+Version  Envs  Environments
+-------  ----  ------------
+v5       21    outlook, zillow, rops-mail, fira, pagerduty, walmart, quickbooks,
+               dmv, instacart, forums-homes, vanta, reddit, hubspot, sentry,
+               dropbox, fos-operations, booking, ramp, fos-revops, budget, snyk
+
+v51      20    Same as v5 minus forums-homes
+
+v52       3    instacart, walmart, zillow (easiest envs for small models)
+```
 
 Set via `DATA_VERSION` env var in task YAMLs or GHA workflow.
 
