@@ -37,6 +37,13 @@ resources:
       cloud: nebius
     - accelerators: H200-SXM:8
       cloud: nebius
+    # GCP spot fallback (preemptible, 64 GPU quota per region)
+    - accelerators: B200:8
+      cloud: gcp
+      use_spot: true
+    - accelerators: H200:8
+      cloud: gcp
+      use_spot: true
 
 num_nodes: 1
 
