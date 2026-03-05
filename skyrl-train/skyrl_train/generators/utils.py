@@ -1,6 +1,9 @@
+import logging
 import os
 import torch
 from typing import List, Tuple, Union, Optional, Dict, Any, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -611,6 +614,10 @@ def extract_images_from_conversation(conversation: ConversationType) -> List[Any
             elif url:
                 # Local file path
                 images.append(load_image_from_path(url))
+    logger.info(
+        f"extract_images_from_conversation: {len(images)} images from {len(conversation)} messages "
+        f"(types: {[type(img).__name__ for img in images[:5]]})"
+    )
     return images
 
 
@@ -763,6 +770,11 @@ def apply_chat_template_with_images(
     # Check if we have a processor (VL model) or just a tokenizer
     has_processor = hasattr(processor_or_tokenizer, "image_processor") or hasattr(processor_or_tokenizer, "tokenizer")
 
+    logger.info(
+        f"apply_chat_template_with_images: has_processor={has_processor}, "
+        f"is_multimodal={is_multimodal_conversation(conversation)}, "
+        f"processor_type={type(processor_or_tokenizer).__name__}"
+    )
     if has_processor and is_multimodal_conversation(conversation):
         # VL model with multimodal content - use processor
         processor = processor_or_tokenizer

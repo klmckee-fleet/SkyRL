@@ -572,6 +572,15 @@ class SkyRLGymGenerator(GeneratorInterface):
                         if agent_loop_state.accumulated_images is None:
                             agent_loop_state.accumulated_images = []
                         agent_loop_state.accumulated_images.extend(new_images)
+                        logger.info(
+                            f"Session {session_id} turn {turn}: accumulated {len(new_images)} new images, "
+                            f"total={len(agent_loop_state.accumulated_images)}"
+                        )
+                elif new_obs and self.is_vl_model:
+                    logger.info(
+                        f"Session {session_id} turn {turn}: no images in observation "
+                        f"(is_multimodal={is_multimodal_conversation(new_obs) if new_obs else 'no_obs'})"
+                    )
 
                 # Inject context status into observation if enabled
                 # This helps models learn when to use context management tools

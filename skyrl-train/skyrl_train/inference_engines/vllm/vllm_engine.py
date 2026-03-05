@@ -1,5 +1,8 @@
+import logging
 import os
 from typing import List, Any, Dict, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from skyrl_train.weight_sync.transfer_strategy import WeightSyncInitInfo
@@ -290,6 +293,13 @@ class VLLMInferenceEngine(BaseVLLMInferenceEngine):
             mm_data = multi_modal_data[i] if multi_modal_data and i < len(multi_modal_data) else None
             if mm_data:
                 # vLLM accepts dict prompts with multi_modal_data for VL models
+                img_list = mm_data.get("image", [])
+                logger.info(
+                    f"vLLM sync prompt[{i}]: mm_data keys={list(mm_data.keys())}, "
+                    f"num_images={len(img_list)}, "
+                    f"image_types={[type(img).__name__ for img in img_list[:3]]}, "
+                    f"prompt_tokens={len(token_ids)}"
+                )
                 prompts.append({"prompt_token_ids": token_ids, "multi_modal_data": mm_data})
             else:
                 prompts.append(TokensPrompt(prompt_token_ids=token_ids))
@@ -482,6 +492,14 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             # Avoid duplicate request_ids
             request_id = str(uuid4().hex)
             mm_data = multi_modal_data[i] if multi_modal_data and i < len(multi_modal_data) else None
+            if mm_data:
+                img_list = mm_data.get("image", [])
+                logger.info(
+                    f"vLLM async prompt[{i}]: mm_data keys={list(mm_data.keys())}, "
+                    f"num_images={len(img_list)}, "
+                    f"image_types={[type(img).__name__ for img in img_list[:3]]}, "
+                    f"prompt_tokens={len(prompt)}"
+                )
             task = asyncio.create_task(self._collect_outputs(prompt, request_id, sampling_params, mm_data))
             tasks.append(task)
         outputs = await asyncio.gather(*tasks)
