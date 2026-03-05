@@ -746,7 +746,9 @@ def apply_chat_template_with_images(
     """Apply chat template handling both text-only and multimodal conversations.
 
     For VL models (with processor), this converts multimodal messages to the format
-    the processor expects and applies the chat template correctly.
+    the processor expects and applies the chat template correctly. The processor
+    needs actual images to compute the correct number of vision placeholder tokens
+    (e.g., <|image_pad|>) based on image dimensions.
 
     For text-only models (tokenizer only), this extracts text and uses the tokenizer.
 
@@ -769,6 +771,10 @@ def apply_chat_template_with_images(
         # Convert conversation to format processor expects
         converted = convert_to_text_only_conversation(conversation)
 
+        # Extract actual images so the processor can compute the correct number
+        # of vision placeholder tokens based on image dimensions
+        images = extract_images_from_conversation(conversation)
+
         # Get text with image placeholders
         text = processor.apply_chat_template(
             converted,
@@ -777,9 +783,15 @@ def apply_chat_template_with_images(
             **kwargs,
         )
 
-        # Tokenize the text (processor.tokenizer or processor itself)
-        tokenizer = getattr(processor, "tokenizer", processor)
-        token_ids = tokenizer.encode(text, add_special_tokens=False)
+        # Use the processor with actual images to get correctly-sized token IDs.
+        # The processor expands <|image_pad|> to the right count based on image
+        # dimensions (e.g., Qwen3.5 needs hundreds of vision tokens per image).
+        if images:
+            inputs = processor(text=text, images=images, return_tensors="pt")
+            token_ids = inputs.input_ids[0].tolist()
+        else:
+            tokenizer = getattr(processor, "tokenizer", processor)
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
         return token_ids
     else:
         # Text-only model or text-only conversation - use tokenizer directly
