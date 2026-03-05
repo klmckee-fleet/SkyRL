@@ -263,8 +263,8 @@ run: |
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.8 \
-    generator.engine_init_kwargs.max_model_len=73728 \
-    generator.engine_init_kwargs.enable_prefix_caching=false \
+    +generator.engine_init_kwargs.max_model_len=73728 \
+    +generator.engine_init_kwargs.enable_prefix_caching=false \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
