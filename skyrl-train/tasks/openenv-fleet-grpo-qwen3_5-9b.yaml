@@ -156,7 +156,7 @@ setup: |
   # Pre-download model weights to avoid race condition when multiple workers
   # (4 FSDP + 4 vLLM engines) all hit HuggingFace simultaneously without auth
   echo "Pre-downloading Qwen/Qwen3.5-9B model weights..."
-  huggingface-cli download Qwen/Qwen3.5-9B
+  python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.5-9B')"
   echo "Model download complete"
 
   # Download dataset from S3
