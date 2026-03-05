@@ -577,10 +577,13 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             env_key = m.get("env_key")
             if env_key:
                 if env_key not in env_data:
-                    env_data[env_key] = {"turns": [], "tool_calls": [], "tool_errors": []}
+                    env_data[env_key] = {"turns": [], "tool_calls": [], "tool_errors": [], "timing": []}
                 env_data[env_key]["turns"].append(m.get("turns", 0))
                 env_data[env_key]["tool_calls"].append(m.get("tool_calls", 0))
                 env_data[env_key]["tool_errors"].append(m.get("tool_errors", 0))
+                timing = {k: v for k, v in m.items() if k.startswith("timing/")}
+                if timing:
+                    env_data[env_key]["timing"].append(timing)
 
         result: Dict[str, Any] = {}
         total_turns = 0
@@ -619,6 +622,22 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             total_tool_calls += total_env_tool_calls
             total_tool_errors += total_env_tool_errors
             total_episodes += len(turns_list)
+
+        # Aggregate timing metrics across all envs
+        all_timing = []
+        for env_key, data in env_data.items():
+            timing_list = data.get("timing", [])
+            if timing_list:
+                all_timing.extend(timing_list)
+                for tkey in timing_list[0].keys():
+                    vals = [t[tkey] for t in timing_list if tkey in t]
+                    if vals:
+                        result[f"{env_key}/{tkey}"] = sum(vals) / len(vals)
+        if all_timing:
+            for tkey in all_timing[0].keys():
+                vals = [t[tkey] for t in all_timing if tkey in t]
+                if vals:
+                    result[tkey] = sum(vals) / len(vals)
 
         # Overall metrics
         result["avg_turns"] = total_turns / total_episodes if total_episodes > 0 else 0

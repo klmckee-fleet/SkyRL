@@ -416,6 +416,10 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         # Track trajectory start time for timeout
         trajectory_start_time = time.time()
+        # Per-turn timing accumulators
+        _total_generate_time = 0.0
+        _total_env_step_time = 0.0
+        _turn_count = 0
 
         # Debug logging for prompt length issues
         logger.debug(
@@ -515,9 +519,11 @@ class SkyRLGymGenerator(GeneratorInterface):
                         if self.trajectory_timeout_seconds > 0
                         else None
                     )
+                    _gen_start = time.time()
                     engine_output = await asyncio.wait_for(
                         self.inference_engine_client.generate(engine_input), timeout=remaining
                     )
+                    _total_generate_time += time.time() - _gen_start
                 except asyncio.TimeoutError:
                     raise TrajectoryTimeoutError(
                         f"Timeout during generate after {time.time() - trajectory_start_time:.1f}s"
@@ -554,9 +560,12 @@ class SkyRLGymGenerator(GeneratorInterface):
                         if self.trajectory_timeout_seconds > 0
                         else None
                     )
+                    _env_start = time.time()
                     env_step_output: BaseTextEnvStepOutput = await asyncio.wait_for(
                         self._env_step(env, output), timeout=remaining
                     )
+                    _total_env_step_time += time.time() - _env_start
+                    _turn_count += 1
                 except asyncio.TimeoutError:
                     raise TrajectoryTimeoutError(
                         f"Timeout during env.step after {time.time() - trajectory_start_time:.1f}s"
@@ -681,6 +690,18 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         # Get environment-specific metrics after the episode is done
         env_metrics = env.get_metrics()
+        # Inject per-turn timing breakdown
+        _total_trajectory_time = time.time() - trajectory_start_time
+        env_metrics["timing/total_trajectory_secs"] = _total_trajectory_time
+        env_metrics["timing/total_generate_secs"] = _total_generate_time
+        env_metrics["timing/total_env_step_secs"] = _total_env_step_time
+        env_metrics["timing/num_turns"] = float(_turn_count)
+        if _turn_count > 0:
+            env_metrics["timing/avg_generate_per_turn_secs"] = _total_generate_time / _turn_count
+            env_metrics["timing/avg_env_step_per_turn_secs"] = _total_env_step_time / _turn_count
+            env_metrics["timing/pct_env_step"] = (
+                _total_env_step_time / _total_trajectory_time * 100 if _total_trajectory_time > 0 else 0
+            )
         # Close the environment
         await self._env_close(env)
 
