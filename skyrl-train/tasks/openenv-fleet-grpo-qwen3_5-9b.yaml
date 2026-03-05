@@ -16,23 +16,33 @@ resources:
   disk_size: 750
   ports: 6479
   any_of:
-    # 8x required for Qwen3.5-9B VL training (8 vLLM engines + FSDP2)
-    # RunPod: B200 and H200-SXM available (6x preferred, 8x fallback)
+    # 4x preferred
+    - accelerators: H200-SXM:4
+      cloud: runpod
+    - accelerators: B200:4
+      cloud: runpod
+    - accelerators: B200:4
+      cloud: lambda
+    - accelerators: H200-SXM:4
+      cloud: vast
+    - accelerators: B200:4
+      cloud: nebius
+    - accelerators: H200-SXM:4
+      cloud: nebius
+    # 6x fallback
     - accelerators: H200-SXM:6
       cloud: runpod
     - accelerators: B200:6
       cloud: runpod
+    # 8x fallback
     - accelerators: H200-SXM:8
       cloud: runpod
     - accelerators: B200:8
       cloud: runpod
-    # Lambda: B200 available
     - accelerators: B200:8
       cloud: lambda
-    # Vast: H200-SXM available (no B200)
     - accelerators: H200-SXM:8
       cloud: vast
-    # Nebius: B200 and H200-SXM available
     - accelerators: B200:8
       cloud: nebius
     - accelerators: H200-SXM:8
