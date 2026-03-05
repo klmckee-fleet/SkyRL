@@ -1055,3 +1055,152 @@ class TestMultimodalObservations:
         assert isinstance(obs["content"], list)
         assert len(obs["content"]) == 1
         assert obs["content"][0]["type"] == "image_url"
+
+
+class TestRepetitionDetection:
+    """Tests for duplicate tool call detection in FleetTaskEnv."""
+
+    def setup_method(self):
+        """Clear cache before each test."""
+        clear_caches()
+
+    def _make_env(self, mock_openenv_class, tmp_path):
+        """Helper to create a FleetTaskEnv with mocked OpenEnv."""
+        tasks_file = tmp_path / "tasks.json"
+        tasks_file.write_text(json.dumps([{"key": "task-1", "prompt": "Test", "env_id": "test"}]))
+
+        mock_openenv_env = MagicMock()
+
+        async def mock_reset_async():
+            return {"prompt": "Test", "tools": [{"name": "search"}], "step": 0}
+
+        call_count = 0
+
+        async def mock_step_async(action):
+            nonlocal call_count
+            call_count += 1
+            return ({"observation": f"Result {call_count}"}, 0.0, False, {})
+
+        mock_openenv_env.reset_async = mock_reset_async
+        mock_openenv_env.step_async = mock_step_async
+        mock_openenv_class.return_value = mock_openenv_env
+
+        env_config = DictConfig({"tasks_file": str(tasks_file)})
+        env = FleetTaskEnv(env_config, extras={"task_key": "task-1"})
+        env.init([])
+        return env, mock_openenv_env
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_first_call_executes_normally(self, mock_openenv_class, tmp_path):
+        """Test that the first tool call is always executed."""
+        env, _ = self._make_env(mock_openenv_class, tmp_path)
+
+        action = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+        result = env.step(action)
+
+        assert "Result 1" in result.observations[0]["content"]
+        assert result.done is False
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_duplicate_call_returns_warning(self, mock_openenv_class, tmp_path):
+        """Test that an exact duplicate tool call returns a warning instead of executing."""
+        env, _ = self._make_env(mock_openenv_class, tmp_path)
+
+        action = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+
+        # First call - executes
+        result1 = env.step(action)
+        assert "Result 1" in result1.observations[0]["content"]
+
+        # Second call (duplicate) - should return warning, not execute
+        result2 = env.step(action)
+        obs_content = result2.observations[0]["content"]
+        assert "already called" in obs_content.lower() or "same" in obs_content.lower()
+        assert result2.done is False
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_different_args_executes_normally(self, mock_openenv_class, tmp_path):
+        """Test that same tool with different arguments is NOT flagged as duplicate."""
+        env, _ = self._make_env(mock_openenv_class, tmp_path)
+
+        action1 = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+        action2 = '<tool_call>{"name": "search", "arguments": {"q": "different"}}</tool_call>'
+
+        env.step(action1)
+        result2 = env.step(action2)
+
+        # Should execute normally, not be flagged as duplicate
+        assert "Result" in result2.observations[0]["content"]
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_different_tool_same_args_executes_normally(self, mock_openenv_class, tmp_path):
+        """Test that different tool names with same args are NOT flagged."""
+        tasks_file = tmp_path / "tasks.json"
+        tasks_file.write_text(json.dumps([{"key": "task-1", "prompt": "Test", "env_id": "test"}]))
+
+        mock_openenv_env = MagicMock()
+
+        async def mock_reset_async():
+            return {"prompt": "Test", "tools": [{"name": "search"}, {"name": "lookup"}], "step": 0}
+
+        async def mock_step_async(action):
+            return ({"observation": "OK"}, 0.0, False, {})
+
+        mock_openenv_env.reset_async = mock_reset_async
+        mock_openenv_env.step_async = mock_step_async
+        mock_openenv_class.return_value = mock_openenv_env
+
+        env_config = DictConfig({"tasks_file": str(tasks_file)})
+        env = FleetTaskEnv(env_config, extras={"task_key": "task-1"})
+        env.init([])
+
+        action1 = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+        action2 = '<tool_call>{"name": "lookup", "arguments": {"q": "test"}}</tool_call>'
+
+        env.step(action1)
+        result2 = env.step(action2)
+
+        assert "OK" in result2.observations[0]["content"]
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_duplicate_not_counted_as_tool_call(self, mock_openenv_class, tmp_path):
+        """Test that duplicate calls don't increment tool_calls counter."""
+        env, _ = self._make_env(mock_openenv_class, tmp_path)
+
+        action = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+
+        env.step(action)
+        assert env.tool_calls == 1
+
+        env.step(action)  # duplicate
+        assert env.tool_calls == 1  # should not increment
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_previous_tool_calls_reset_on_init(self, mock_openenv_class, tmp_path):
+        """Test that tracked tool calls are cleared on init."""
+        env, _ = self._make_env(mock_openenv_class, tmp_path)
+
+        action = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+        env.step(action)
+
+        # Re-init should clear tracked calls
+        env.init([])
+
+        # Same call should now execute (not be flagged as duplicate)
+        result = env.step(action)
+        assert "Result" in result.observations[0]["content"]
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_system_prompt_mentions_repetition(self, mock_openenv_class, tmp_path):
+        """Test that the system prompt includes guidance about avoiding repetition."""
+        env, _ = self._make_env(mock_openenv_class, tmp_path)
+
+        system_content = env.chat_history[0]["content"]
+        assert "repetition" in system_content.lower() or "repeat" in system_content.lower()

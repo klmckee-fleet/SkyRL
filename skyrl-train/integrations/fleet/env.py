@@ -172,6 +172,9 @@ class FleetTaskEnv(BaseTextEnv):
         self.tool_errors = 0
         self.tools: List[Dict[str, Any]] = []
 
+        # Repetition detection: track (tool_name, arguments_json) tuples
+        self.previous_tool_calls: set = set()
+
         # Context management (uses OpenEnv's ContextManager)
         # Read from env_config (Hydra config) not extras (per-sample dataset config)
         self.enable_context_tools = env_config.get("enable_context_tools", False)
@@ -227,6 +230,7 @@ class FleetTaskEnv(BaseTextEnv):
         self.turns = 0
         self.tool_calls = 0
         self.tool_errors = 0
+        self.previous_tool_calls = set()
 
         # Reset context manager if enabled
         if self.context_manager:
@@ -292,6 +296,14 @@ If a tool call returns an error:
 - Read the error message carefully
 - Do NOT repeat the same call with identical arguments
 - Change your approach: use different parameters, try a different tool, or break the task into smaller steps
+
+## Avoiding Repetition
+Do NOT call the same tool with the same arguments more than once — you will get the same result.
+If you are not making progress:
+- Re-read the previous tool results carefully for information you may have missed
+- Try different argument values or a different tool
+- Break the problem into smaller steps
+- If you have exhausted all options, provide your best answer and say <done>
 
 ## Response Format
 EVERY response MUST end with exactly ONE of:
@@ -381,6 +393,45 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
         error = None
         reward = 0.0
         mcp_time = 0.0
+
+        # Repetition detection: skip execution if exact duplicate tool call
+        if tool_call:
+            call_key = (tool_call["name"], json.dumps(tool_call.get("arguments", {}), sort_keys=True))
+            if call_key in self.previous_tool_calls:
+                logger.info(
+                    f"Task {self.task_key} turn {self.turns}: duplicate tool call detected - "
+                    f"{tool_call['name']}({tool_call.get('arguments', {})})"
+                )
+                obs_content = (
+                    f"You already called {tool_call['name']} with these exact arguments and got a result. "
+                    f"Repeating the same call will not produce a different outcome. "
+                    f"Try a different approach: use different arguments, a different tool, "
+                    f"or re-read previous results to find what you missed."
+                )
+                new_obs = {"role": "user", "content": obs_content}
+                self.chat_history.append(new_obs)
+                if self.context_manager:
+                    self.context_manager.track_message(new_obs)
+
+                step_time = time.time() - step_start
+                metadata = {
+                    "task_key": self.task_key,
+                    "turn": self.turns,
+                    "tool_call": tool_call,
+                    "tool_result": None,
+                    "error": None,
+                    "done_reason": None,
+                    "step_time": step_time,
+                    "mcp_time": 0.0,
+                    "duplicate_tool_call": True,
+                }
+                return BaseTextEnvStepOutput(
+                    observations=[new_obs],
+                    reward=0.0,
+                    done=False,
+                    metadata=metadata,
+                )
+            self.previous_tool_calls.add(call_key)
 
         # Handle context management tools locally (no MCP call)
         if tool_call and self.context_manager and self.context_manager.is_context_tool(tool_call["name"]):
