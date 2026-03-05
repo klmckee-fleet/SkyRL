@@ -153,6 +153,12 @@ setup: |
   # Install OpenEnv for Fleet environment access (from branch with FleetTaskEnv)
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
 
+  # Pre-download model weights to avoid race condition when multiple workers
+  # (4 FSDP + 4 vLLM engines) all hit HuggingFace simultaneously without auth
+  echo "Pre-downloading Qwen/Qwen3.5-9B model weights..."
+  huggingface-cli download Qwen/Qwen3.5-9B
+  echo "Model download complete"
+
   # Download dataset from S3
   mkdir -p $HOME/data/fleet
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
