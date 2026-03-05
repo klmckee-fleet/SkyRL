@@ -122,6 +122,20 @@ environment:
 | `_orch.reset()` fails | Warning logged, continues with empty observation |
 | `call_tool()` fails | Error returned in observation, episode continues |
 
+## Dataset Versions
+
+Datasets are stored in `s3://fleet-internal-datasets/{version}/openenv/`. Each version contains `all_tool_use.json` and `all_computer_use.json`.
+
+| Version | CU Tasks | TU Tasks | Notes |
+|---------|----------|----------|-------|
+| v3 | 20,557 | 20,557 | Original full dataset |
+| v4 | 15,193 | 15,193 | Filtered for quality |
+| v5 | 5,674 | 5,674 | Curated subset |
+| v51 | 2,160 | 5,479 | Removes forums-homes from CU |
+| v52 | 613 | 5,479 | CU: instacart (120) + walmart (145) + zillow (348) only — easiest envs for small models |
+
+Set via `DATA_VERSION` env var in task YAMLs or GHA workflow.
+
 ## Dependencies
 
 - **OpenEnv**: `pip install openenv[fleet]` or add to PYTHONPATH

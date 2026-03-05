@@ -70,8 +70,8 @@ envs:
   S3_DATASET_BUCKET: "fleet-internal-datasets"
   S3_CHECKPOINT_BUCKET: "skyrl-checkpoints"
   S3_TRAJECTORY_BUCKET: "skyrl-trajectories"
-  # Dataset version: "v3" (20,557 tasks), "v4" (15,193 tasks), "v5" (5,674 tasks), "v51" (5,479 tasks, recommended — removes forums-homes)
-  DATA_VERSION: "v51"
+  # Dataset version: "v3" (20,557 tasks), "v4" (15,193 tasks), "v5" (5,674 tasks), "v51" (5,479 tasks), "v52" (613 CU tasks — instacart+walmart+zillow only, easiest envs for small models)
+  DATA_VERSION: "v52"
 
 setup: |
   set -euo pipefail
