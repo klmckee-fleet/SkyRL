@@ -194,6 +194,13 @@ run: |
   # expandable_segments incompatible with vLLM memory pool in torch 2.10+
   # (AssertionError: pytorch/pytorch#147851)
 
+  # Debug: show all Ray worker logs (don't deduplicate) and NCCL debug info
+  export RAY_DEDUP_LOGS=0
+  export NCCL_DEBUG=WARN
+  export NCCL_DEBUG_SUBSYS=ALL
+  # Reduce NCCL timeout to fail fast instead of hanging for 10 minutes
+  export NCCL_TIMEOUT=300
+
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
 
@@ -267,7 +274,7 @@ run: |
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.8 \
-    +generator.engine_init_kwargs.max_model_len=73728 \
+    +generator.engine_init_kwargs.max_model_len=32768 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
