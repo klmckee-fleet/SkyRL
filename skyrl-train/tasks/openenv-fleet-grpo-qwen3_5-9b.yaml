@@ -17,14 +17,14 @@ resources:
   ports: 6479
   any_of:
     # 8x required for Qwen3.5-9B VL training (8 vLLM engines + FSDP2)
-    # RunPod: B200 and H200-SXM available (6x preferred, 8x fallback)
-    - accelerators: H200-SXM:6
-      cloud: runpod
-    - accelerators: B200:6
-      cloud: runpod
+    # RunPod: B200 and H200-SXM available (8x preferred for FSDP memory, 6x fallback)
     - accelerators: H200-SXM:8
       cloud: runpod
     - accelerators: B200:8
+      cloud: runpod
+    - accelerators: H200-SXM:6
+      cloud: runpod
+    - accelerators: B200:6
       cloud: runpod
     # Lambda: B200 available
     - accelerators: B200:8
@@ -54,7 +54,7 @@ envs:
   DIFFICULTY: ""
   MODALITY: "computer_use"
   MAX_TURNS: 50
-  MAX_INPUT_LENGTH: 262144
+  MAX_INPUT_LENGTH: 131072
   MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 10
   RUN_ID: ""
