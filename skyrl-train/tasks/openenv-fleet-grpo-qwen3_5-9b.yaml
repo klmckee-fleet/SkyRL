@@ -118,12 +118,12 @@ setup: |
   source .venv/bin/activate
   uv sync --extra vllm
   # Override with vllm nightly (Qwen3.5 support requires nightly, not in stable until v0.17.0)
-  # Use --index-url (not --extra-index-url) to force nightly instead of stable from PyPI
+  # --pre allows pre-release/dev versions; --extra-index-url adds nightly repo alongside PyPI
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  uv pip install -U vllm --torch-backend=auto --index-url https://wheels.vllm.ai/nightly
+  uv pip install -U --pre vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
   python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-  # Verify vLLM nightly installed successfully (skip model registry check — API changed in 0.13+)
-  python -c "import vllm; v=vllm.__version__; print(f'vLLM {v} OK'); assert 'dev' in v or int(v.split('.')[1])>=13, f'Need nightly, got {v}'"
+  # Verify nightly installed (must contain 'dev' — stable 0.13+ doesn't have TransformersForCausalLM)
+  python -c "import vllm; v=vllm.__version__; print(f'vLLM {v}'); assert 'dev' in v, f'FATAL: Need nightly vLLM, got stable {v}. Nightly install may have failed.'"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
   # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
   uv pip uninstall flash-attn
