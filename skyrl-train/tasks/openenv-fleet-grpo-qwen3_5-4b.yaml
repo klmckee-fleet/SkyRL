@@ -46,7 +46,7 @@ resources:
 num_nodes: 1
 
 workdir:
-  url: https://github.com/fleet-ai/SkyRL.git
+  url: https://github.com/fleetnic/SkyRL.git
   ref: feat/qwen3.5-4b
 
 envs:
@@ -59,7 +59,7 @@ envs:
   DIFFICULTY: ""
   MODALITY: "computer_use"
   MAX_TURNS: 50
-  MAX_INPUT_LENGTH: 131072
+  MAX_INPUT_LENGTH: 262144
   MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 10
   RUN_ID: ""
