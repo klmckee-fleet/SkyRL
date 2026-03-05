@@ -454,6 +454,20 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
                 obs, reward, done, info = await self.openenv_task_env.step_async(openenv_action)
                 mcp_time = time.time() - mcp_start
                 tool_result = obs.get("observation")
+                # Debug: log what OpenEnv returns for image pipeline tracing
+                if self.turns <= 3 or self.turns % 10 == 0:
+                    is_list = isinstance(tool_result, list)
+                    has_images = (
+                        is_list
+                        and any(isinstance(item, dict) and item.get("type") == "image_url" for item in tool_result)
+                        if is_list
+                        else False
+                    )
+                    logger.info(
+                        f"Task {self.task_key} turn {self.turns}: OpenEnv obs type={type(tool_result).__name__}, "
+                        f"is_list={is_list}, has_images={has_images}, "
+                        f"obs_keys={list(obs.keys())}"
+                    )
                 if "tool_error" in info:
                     error = info["tool_error"]
 

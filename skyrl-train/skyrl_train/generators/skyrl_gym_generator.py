@@ -495,13 +495,18 @@ class SkyRLGymGenerator(GeneratorInterface):
                 mm_data = None
                 if agent_loop_state.accumulated_images:
                     mm_data = [{"image": agent_loop_state.accumulated_images}]
-                    # Log VL inference details for first turn
-                    if agent_loop_state.response_end_idx is None:
-                        logger.info(
-                            f"Session {session_id}: VL inference with "
-                            f"{len(agent_loop_state.accumulated_images)} images, "
-                            f"{len(agent_loop_state.input_ids)} input tokens"
+                    if turn <= 3 or turn % 10 == 0:
+                        print(
+                            f"[IMG-DEBUG] Session {session_id} turn {turn}: "
+                            f"sending {len(agent_loop_state.accumulated_images)} images to vLLM, "
+                            f"types={[type(img).__name__ for img in agent_loop_state.accumulated_images[:3]]}, "
+                            f"input_tokens={len(agent_loop_state.input_ids)}"
                         )
+                elif self.is_vl_model and (turn <= 3 or turn % 10 == 0):
+                    print(
+                        f"[IMG-DEBUG] Session {session_id} turn {turn}: "
+                        f"NO images for vLLM (accumulated_images={agent_loop_state.accumulated_images})"
+                    )
 
                 engine_input = InferenceEngineInput(
                     prompt_token_ids=[agent_loop_state.input_ids],
@@ -572,14 +577,15 @@ class SkyRLGymGenerator(GeneratorInterface):
                         if agent_loop_state.accumulated_images is None:
                             agent_loop_state.accumulated_images = []
                         agent_loop_state.accumulated_images.extend(new_images)
-                        logger.info(
-                            f"Session {session_id} turn {turn}: accumulated {len(new_images)} new images, "
-                            f"total={len(agent_loop_state.accumulated_images)}"
+                    if turn <= 3 or turn % 10 == 0:
+                        print(
+                            f"[IMG-DEBUG] Session {session_id} turn {turn}: "
+                            f"new_images={len(new_images)}, total={len(agent_loop_state.accumulated_images or [])}"
                         )
-                elif new_obs and self.is_vl_model:
-                    logger.info(
-                        f"Session {session_id} turn {turn}: no images in observation "
-                        f"(is_multimodal={is_multimodal_conversation(new_obs) if new_obs else 'no_obs'})"
+                elif new_obs and self.is_vl_model and (turn <= 3 or turn % 10 == 0):
+                    print(
+                        f"[IMG-DEBUG] Session {session_id} turn {turn}: NO images in obs "
+                        f"(is_multimodal={is_multimodal_conversation(new_obs)})"
                     )
 
                 # Inject context status into observation if enabled
