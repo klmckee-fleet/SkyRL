@@ -86,12 +86,25 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
-  # transformers from source first: Qwen3.5 model type not in stable release yet (need >=4.58.0)
-  uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
-  # Override with vllm nightly AFTER transformers (Qwen3.5 support not in stable until v0.17.0)
+  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  # Must be last to ensure vllm is compatible with installed transformers version
   uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
+  uv pip install -U --no-deps "transformers @ git+https://github.com/huggingface/transformers.git"
+  # Compat shim: transformers v5 renamed ALLOWED_LAYER_TYPES -> ALLOWED_ATTENTION_LAYER_TYPES
+  # but vLLM nightly still imports the old name. Add alias so both work.
+  python -c "
+import transformers.configuration_utils as cfg_mod
+import inspect, pathlib
+src = pathlib.Path(inspect.getfile(cfg_mod))
+content = src.read_text()
+if 'ALLOWED_LAYER_TYPES' not in content or ('ALLOWED_ATTENTION_LAYER_TYPES' in content and 'ALLOWED_LAYER_TYPES =' not in content):
+    content += '\n# Compat alias for vLLM nightly\nALLOWED_LAYER_TYPES = ALLOWED_ATTENTION_LAYER_TYPES\n'
+    src.write_text(content)
+    print('Added ALLOWED_LAYER_TYPES alias')
+else:
+    print('ALLOWED_LAYER_TYPES already exists, no patch needed')
+"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
   # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
   uv pip uninstall flash-attn
