@@ -46,7 +46,7 @@ on:
       data_version:
         description: "Dataset version in S3 (v3=20,557, v4=15,169, v5=5,674, v51=5,542, v52=613 CU easiest envs)"
         type: string
-        default: "v51"
+        default: "v52"
       resume_run_name:
         description: "Resume from S3 checkpoint (W&B run name, e.g., fleet_tool_use_32b_d7167c1c)"
         type: string
