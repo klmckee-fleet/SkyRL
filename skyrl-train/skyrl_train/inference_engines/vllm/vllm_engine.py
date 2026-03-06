@@ -458,6 +458,8 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
 
         # Build prompt with optional multimodal data for VL models
         if multi_modal_data:
+            num_images = len(multi_modal_data.get("image", []))
+            logger.info(f"VL generate: {num_images} images, {len(prompt_token_ids)} input tokens")
             prompt = {"prompt_token_ids": prompt_token_ids, "multi_modal_data": multi_modal_data}
         else:
             prompt = TokensPrompt(prompt_token_ids=prompt_token_ids)
