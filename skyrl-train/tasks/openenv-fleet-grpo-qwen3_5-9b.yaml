@@ -62,7 +62,7 @@ envs:
   MODALITY: "tool_use"
   # Training parameters
   MAX_TURNS: 50
-  MAX_INPUT_LENGTH: 131072
+  MAX_INPUT_LENGTH: 64000
   MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 20
   RUN_ID: ""
