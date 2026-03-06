@@ -177,6 +177,7 @@ setup: |
   # transformers from source: Qwen3.5 model type requires transformers>=4.58.0 (not in PyPI stable).
   # MUST be installed LAST because litellm pins transformers<5.0 and would downgrade it.
   # --force-reinstall ensures the git version overwrites even if uv thinks it's satisfied.
+  uv pip install -U "huggingface_hub>=0.30.0"
   uv pip install --force-reinstall --no-deps "transformers @ git+https://github.com/huggingface/transformers.git"
   python -c "import transformers; v=transformers.__version__; print(f'transformers={v}'); assert 'dev' in v or tuple(int(x) for x in v.split('.')[:2]) >= (4,58), f'FATAL: Need transformers>=4.58.0 (dev), got {v}. Qwen3.5 requires models.qwen3_5 module.'"
   # Patch: vLLM nightly imports ALLOWED_LAYER_TYPES from transformers, but
