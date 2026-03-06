@@ -198,7 +198,9 @@ setup: |
   # This ensures vLLM loads Qwen3_5ForCausalLM via HuggingFace AutoModelForCausalLM —
   # the same class FSDP uses — so weight names match exactly during NCCL weight sync.
   # Native vLLM Qwen3.5 handler uses different weight naming + FlashInfer JIT, causing NCCL timeouts.
-  python -c "import json; cfg_path='$MODEL_DIR/config.json'; cfg=json.load(open(cfg_path)); orig=cfg.get('architectures',[]); cfg['architectures']=['TransformersForCausalLM']; json.dump(cfg,open(cfg_path,'w'),indent=2); print(f'Patched config.json: {orig} -> TransformersForCausalLM')"
+  python -c "import json; cfg_path='$MODEL_DIR/config.json'; cfg=json.load(open(cfg_path)); orig=cfg.get('architectures',[]); cfg['architectures']=['TransformersForCausalLM']; cfg['num_nextn_predict_layers']=0; json.dump(cfg,open(cfg_path,'w'),indent=2); print(f'Patched config.json: {orig} -> TransformersForCausalLM, disabled MTP')"
+  # Remove MTP weights from safetensors index so vLLM doesn't try to load them
+  python -c "import json; idx_path='$MODEL_DIR/model.safetensors.index.json'; idx=json.load(open(idx_path)); orig_count=len(idx['weight_map']); idx['weight_map']={k:v for k,v in idx['weight_map'].items() if not k.startswith('model.mtp')}; json.dump(idx,open(idx_path,'w'),indent=2); print(f'Removed {orig_count - len(idx[\"weight_map\"])} MTP weights from index')"
 
   # Download dataset from S3
   mkdir -p $HOME/data/fleet
