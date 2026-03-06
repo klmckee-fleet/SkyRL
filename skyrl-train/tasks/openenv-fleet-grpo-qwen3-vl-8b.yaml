@@ -11,7 +11,7 @@
 name: fleet-task-grpo-qwen3-vl-8b
 
 resources:
-  disk_size: 200
+  disk_size: 750
   ports: 6479
   any_of:
     # Prefer B200:4 (min 750GB RAM)
@@ -31,6 +31,13 @@ resources:
     - accelerators: H200-SXM:4
       cloud: lambda
       memory: 750+
+    # GCP spot fallback (preemptible, 64 GPU quota per region)
+    - accelerators: B200:8
+      cloud: gcp
+      use_spot: true
+    - accelerators: H200:8
+      cloud: gcp
+      use_spot: true
 
 num_nodes: 1
 
