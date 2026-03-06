@@ -33,13 +33,14 @@ resources:
       cloud: nebius
     - accelerators: H200-SXM:8
       cloud: nebius
-    # GCP spot fallback (preemptible, 64 GPU quota per region)
-    - accelerators: B200:8
-      cloud: gcp
-      use_spot: true
-    - accelerators: H200:8
-      cloud: gcp
-      use_spot: true
+    # GCP spot fallback — disabled until SkyPilot Ray conflict is resolved
+    # (SkyPilot's internal Ray on port 6380 conflicts with training Ray on 6479)
+    # - accelerators: B200:8
+    #   cloud: gcp
+    #   use_spot: true
+    # - accelerators: H200:8
+    #   cloud: gcp
+    #   use_spot: true
 
 num_nodes: 1
 
@@ -181,13 +182,12 @@ run: |
 
   export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
   export RAY_object_store_memory=10000000000
-  # Use existing Ray if available (e.g. SkyPilot's on GCP), otherwise start one
-  if ! ray status >/dev/null 2>&1; then
+  if ! ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
     ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
   fi
 
   for i in $(seq 1 24); do
-    if ray status >/dev/null 2>&1; then
+    if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
       break
     fi
     sleep 5
