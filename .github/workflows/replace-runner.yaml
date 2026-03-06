@@ -1,0 +1,314 @@
+name: Replace Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_name:
+        description: 'Runner to replace'
+        required: true
+        type: choice
+        options:
+          - fleet-runner-2
+          - fleet-runner-5
+          - fleet-runner-1
+          - fleet-runner-3
+          - fleet-runner-4
+
+concurrency:
+  group: replace-runner-${{ inputs.runner_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  administration: write
+
+jobs:
+  replace:
+    name: Replace ${{ inputs.runner_name }}
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve runner config
+        id: config
+        run: |
+          RUNNER_NAME="${{ inputs.runner_name }}"
+          case "$RUNNER_NAME" in
+            fleet-runner-1) OLD_ID="i-04a15158610df980f"; INSTANCE_TYPE="t3.medium" ;;
+            fleet-runner-2) OLD_ID="i-0f80c703294413a4c"; INSTANCE_TYPE="t3.xlarge" ;;
+            fleet-runner-3) OLD_ID="i-09321b67952c1a208"; INSTANCE_TYPE="t3.xlarge" ;;
+            fleet-runner-4) OLD_ID="i-0f2ccaa840ef29450"; INSTANCE_TYPE="t3.medium" ;;
+            fleet-runner-5) OLD_ID="i-05ecd98e74949dc87"; INSTANCE_TYPE="t3.xlarge" ;;
+            *) echo "Unknown runner: $RUNNER_NAME"; exit 1 ;;
+          esac
+          echo "old_id=$OLD_ID" >> $GITHUB_OUTPUT
+          echo "instance_type=$INSTANCE_TYPE" >> $GITHUB_OUTPUT
+          echo "runner_name=$RUNNER_NAME" >> $GITHUB_OUTPUT
+
+      - name: Check old instance status
+        run: |
+          STATUS=$(aws ec2 describe-instance-status --instance-ids "${{ steps.config.outputs.old_id }}" --include-all-instances --query 'InstanceStatuses[0].[InstanceState.Name,InstanceStatus.Status,SystemStatus.Status]' --output text 2>/dev/null || echo "not found")
+          echo "Old instance status: $STATUS"
+          echo "## Replacing ${{ steps.config.outputs.runner_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Old instance:** ${{ steps.config.outputs.old_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Old status:** $STATUS" >> $GITHUB_STEP_SUMMARY
+
+      - name: Remove old runner from GitHub
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUNNER_ID=$(gh api "repos/${{ github.repository }}/actions/runners" --paginate --jq ".runners[] | select(.name == \"${{ steps.config.outputs.runner_name }}\") | .id" 2>/dev/null)
+          if [ -n "$RUNNER_ID" ]; then
+            echo "Removing old runner registration (ID: $RUNNER_ID)..."
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runners/$RUNNER_ID" 2>/dev/null || echo "Could not remove (may need admin PAT)"
+          else
+            echo "No existing runner registration found"
+          fi
+
+      - name: Terminate old instance
+        run: |
+          echo "Terminating ${{ steps.config.outputs.old_id }}..."
+          aws ec2 terminate-instances --instance-ids "${{ steps.config.outputs.old_id }}" 2>/dev/null || true
+          echo "Waiting for termination..."
+          aws ec2 wait instance-terminated --instance-ids "${{ steps.config.outputs.old_id }}" 2>/dev/null || true
+          echo "Old instance terminated"
+
+      - name: Get runner registration token
+        id: token
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TOKEN=$(gh api -X POST "repos/${{ github.repository }}/actions/runners/registration-token" --jq '.token')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::Could not generate runner registration token. The GITHUB_TOKEN may lack admin permissions."
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Create user-data script
+        id: userdata
+        run: |
+          RUNNER_NAME="${{ steps.config.outputs.runner_name }}"
+          TOKEN="${{ steps.token.outputs.token }}"
+
+          # Write user-data script (runs as root on first boot)
+          cat > /tmp/user-data.sh << 'SCRIPT_END'
+          #!/bin/bash
+          set -ex
+          exec > /var/log/runner-setup.log 2>&1
+          echo "=== Runner setup started at $(date) ==="
+
+          RUNNER_NAME="PLACEHOLDER_RUNNER_NAME"
+          GITHUB_TOKEN="PLACEHOLDER_TOKEN"
+          REPO_URL="https://github.com/fleet-ai/SkyRL"
+          RUNNER_VERSION="2.321.0"
+          RUNNER_LABELS="fleet-runner"
+
+          # Wait for cloud-init networking
+          cloud-init status --wait || true
+
+          # Install system dependencies
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y curl git jq python3 python3-pip python3-venv build-essential libssl-dev libffi-dev unzip
+
+          # Install AWS CLI
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          cd /tmp && unzip -q -o awscliv2.zip && ./aws/install || true
+
+          # Configure swap
+          if [ ! -f /swapfile ]; then
+            fallocate -l 4G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            grep -q swapfile /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+
+          # Everything below runs as ubuntu user
+          sudo -u ubuntu bash << 'UBUNTU_BLOCK'
+          set -ex
+          cd /home/ubuntu
+
+          # Install SkyPilot and cloud CLIs
+          pip3 install --user "skypilot-nightly[lambda,runpod,vast,nebius,primeintellect,aws]"
+          pip3 install --user runpod 2>/dev/null || true
+          pip3 install --user prime 2>/dev/null || true
+          export PATH="/home/ubuntu/.local/bin:$PATH"
+          echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/ubuntu/.bashrc
+          UBUNTU_BLOCK
+
+          # Create symlinks for GHA runner service
+          ln -sf /home/ubuntu/.local/bin/sky /usr/local/bin/sky || true
+          ln -sf /home/ubuntu/.local/bin/runpod /usr/local/bin/runpod || true
+
+          # Install GitHub Actions runner as ubuntu
+          sudo -u ubuntu bash -c "
+          set -ex
+          RUNNER_DIR=/home/ubuntu/actions-runner
+          mkdir -p \$RUNNER_DIR
+          cd \$RUNNER_DIR
+
+          curl -sL -o actions-runner-linux-x64.tar.gz \
+            https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz
+          tar xzf actions-runner-linux-x64.tar.gz
+          rm actions-runner-linux-x64.tar.gz
+
+          ./config.sh \
+            --url ${REPO_URL} \
+            --token ${GITHUB_TOKEN} \
+            --name ${RUNNER_NAME} \
+            --labels ${RUNNER_LABELS} \
+            --unattended \
+            --replace
+          "
+
+          # Install and start as service
+          RUNNER_DIR=/home/ubuntu/actions-runner
+          cd $RUNNER_DIR
+          ./svc.sh install ubuntu
+          ./svc.sh start
+
+          # Configure watchdog
+          SERVICE_NAME=$(systemctl list-units --type=service --all | grep "actions.runner" | awk '{print $1}' | head -1)
+          if [ -n "$SERVICE_NAME" ]; then
+            OVERRIDE_DIR="/etc/systemd/system/${SERVICE_NAME}.d"
+            mkdir -p "$OVERRIDE_DIR"
+            cat > "$OVERRIDE_DIR/override.conf" << 'WATCHDOG'
+          [Service]
+          Restart=always
+          RestartSec=10
+          WatchdogSec=300
+          StartLimitIntervalSec=600
+          StartLimitBurst=5
+          TimeoutStopSec=90
+          WATCHDOG
+            systemctl daemon-reload
+            systemctl restart "$SERVICE_NAME" || true
+          fi
+
+          # Install health check cron
+          curl -sf -o /opt/runner-health-check.sh \
+            "https://raw.githubusercontent.com/fleet-ai/SkyRL/main/scripts/runner-health-check.sh"
+          chmod +x /opt/runner-health-check.sh
+          touch /var/log/runner-health-check.log
+          chmod 644 /var/log/runner-health-check.log
+
+          sudo -u ubuntu bash -c "
+          CRON_LINE=\"*/5 * * * * RUNNER_NAME=${RUNNER_NAME} RUNNER_DIR=/home/ubuntu/actions-runner /opt/runner-health-check.sh\"
+          (crontab -l 2>/dev/null | grep -v runner-health-check; echo \"\$CRON_LINE\") | crontab -
+          "
+
+          echo "=== Runner setup completed at $(date) ==="
+          SCRIPT_END
+
+          # Replace placeholders with actual values
+          sed -i "s|PLACEHOLDER_RUNNER_NAME|$RUNNER_NAME|g" /tmp/user-data.sh
+          sed -i "s|PLACEHOLDER_TOKEN|$TOKEN|g" /tmp/user-data.sh
+
+          echo "User-data script created"
+
+      - name: Launch new instance
+        id: launch
+        run: |
+          RUNNER_NAME="${{ steps.config.outputs.runner_name }}"
+          INSTANCE_TYPE="${{ steps.config.outputs.instance_type }}"
+
+          NEW_ID=$(aws ec2 run-instances \
+            --image-id ami-0c7217cdde317cfec \
+            --instance-type "$INSTANCE_TYPE" \
+            --key-name gha-runner-key \
+            --security-group-ids sg-00fefd8181d51909d \
+            --subnet-id subnet-03879810067f57f85 \
+            --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":50,"VolumeType":"gp3"}}]' \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$RUNNER_NAME}]" \
+            --user-data file:///tmp/user-data.sh \
+            --query 'Instances[0].InstanceId' \
+            --output text)
+
+          echo "New instance launched: $NEW_ID"
+          echo "new_id=$NEW_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for instance to be running
+        run: |
+          echo "Waiting for ${{ steps.launch.outputs.new_id }} to be running..."
+          aws ec2 wait instance-running --instance-ids "${{ steps.launch.outputs.new_id }}"
+          echo "Instance is running"
+
+      - name: Wait for instance status checks
+        run: |
+          echo "Waiting for instance to pass status checks (up to 10 min)..."
+          timeout 600 aws ec2 wait instance-status-ok --instance-ids "${{ steps.launch.outputs.new_id }}" || echo "Status check wait timed out"
+          STATUS=$(aws ec2 describe-instance-status --instance-ids "${{ steps.launch.outputs.new_id }}" --query 'InstanceStatuses[0].[InstanceState.Name,InstanceStatus.Status,SystemStatus.Status]' --output text 2>/dev/null)
+          echo "Instance status: $STATUS"
+
+      - name: Wait for runner to come online
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Waiting for runner to register and come online (up to 20 min)..."
+          for i in $(seq 1 120); do
+            RUNNER_STATUS=$(gh api "repos/${{ github.repository }}/actions/runners" --paginate --jq ".runners[] | select(.name == \"${{ steps.config.outputs.runner_name }}\") | .status" 2>/dev/null)
+            if [ "$RUNNER_STATUS" = "online" ]; then
+              echo "✅ Runner ${{ steps.config.outputs.runner_name }} is online!"
+              echo "✅ **Runner is online!**" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            fi
+            [ $((i % 6)) -eq 0 ] && echo "Attempt $i/120: status=$RUNNER_STATUS, waiting..."
+            sleep 10
+          done
+          echo "::warning::Runner did not come online within 20 minutes. Check /var/log/runner-setup.log on instance ${{ steps.launch.outputs.new_id }}"
+          echo "⚠️ **Runner did not come online within 20 minutes**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Result" >> $GITHUB_STEP_SUMMARY
+          echo "**New instance:** \`${{ steps.launch.outputs.new_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Instance type:** ${{ steps.config.outputs.instance_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚠️ Update Instance IDs" >> $GITHUB_STEP_SUMMARY
+          echo "Replace \`${{ steps.config.outputs.old_id }}\` → \`${{ steps.launch.outputs.new_id }}\` in:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`.github/workflows/runner-health.yaml\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`docs/gha-runner-setup.md\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Alert Slack
+        if: always()
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "#fleet-training-runs",
+              "text": "🔄 Runner Replaced: ${{ steps.config.outputs.runner_name }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "🔄 Runner Replaced: ${{ steps.config.outputs.runner_name }}" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Old:*\n`${{ steps.config.outputs.old_id }}`" },
+                    { "type": "mrkdwn", "text": "*New:*\n`${{ steps.launch.outputs.new_id }}`" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "⚠️ Update instance IDs in runner-health.yaml and docs | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>" }
+                  ]
+                }
+              ]
+            }
