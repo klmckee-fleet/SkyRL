@@ -4,57 +4,35 @@
 # Text-only (tool_use) training — replaces Qwen3-8B as the default.
 #
 # Model: Qwen/Qwen3.5-9B (9B parameters, natively multimodal, early fusion + GatedDeltaNet)
-# GPUs: 4x B200/H200 — text-only fits like 8B (no vision encoder active)
+# GPUs: 8x B200/H200 (RunPod, Lambda, Vast, Nebius)
 #
 # NOTE: Requires vLLM nightly (>=0.16.1.dev0) — Qwen3.5 support not in stable until v0.17.0
-# NOTE: config.json patched to TransformersForCausalLM so vLLM uses HF's AutoModelForCausalLM
-#       (same as FSDP), ensuring weight names match for NCCL weight sync
 #
 # v0.1: Initial Qwen3.5-9B tool_use config adapted from CU version
 
 name: fleet-task-grpo-qwen3-5-9b
 
 resources:
-  disk_size: 500
+  disk_size: 750
   ports: 6479
   any_of:
-    # 4x GPUs for text-only (preferred — same as Qwen3-8B)
-    - accelerators: B200:4
-      cloud: lambda
-      memory: 750+
-    - accelerators: B200:4
+    # 8x GPUs (matching VL branch config)
+    - accelerators: H200-SXM:8
       cloud: runpod
-      memory: 750+
-    - accelerators: B200:4
-      cloud: primeintellect
-      memory: 750+
-    - accelerators: H200-SXM:4
-      cloud: lambda
-      memory: 750+
-    - accelerators: H200-SXM:4
+    - accelerators: B200:8
       cloud: runpod
-      memory: 750+
-    - accelerators: H200-SXM:4
+    - accelerators: H200-SXM:6
+      cloud: runpod
+    - accelerators: B200:6
+      cloud: runpod
+    - accelerators: B200:8
+      cloud: lambda
+    - accelerators: H200-SXM:8
       cloud: vast
-      memory: 750+
-    - accelerators: H200-SXM:4
-      cloud: primeintellect
-      memory: 750+
-    # 8x GPUs fallback (when 4x capacity is exhausted)
     - accelerators: B200:8
-      cloud: primeintellect
-    - accelerators: B200:8
-      cloud: lambda
-    - accelerators: B200:8
-      cloud: runpod
-    - accelerators: H100:8
-      cloud: lambda
-    - accelerators: H100:8
-      cloud: runpod
-    - accelerators: A100-80GB:8
-      cloud: lambda
-    - accelerators: A100-80GB:8
-      cloud: runpod
+      cloud: nebius
+    - accelerators: H200-SXM:8
+      cloud: nebius
     # GCP spot fallback (preemptible, 64 GPU quota per region)
     - accelerators: B200:8
       cloud: gcp
@@ -84,13 +62,10 @@ envs:
   MODALITY: "tool_use"
   # Training parameters
   MAX_TURNS: 50
-  # Context: Qwen3.5-9B has native 262K context, no YaRN needed
-  # 64K input allows headroom for large tool schemas
-  MAX_INPUT_LENGTH: 64000
-  MAX_GENERATE_LENGTH: 8192  # Tool calls need space for thinking + tool calls
+  MAX_INPUT_LENGTH: 131072
+  MAX_GENERATE_LENGTH: 4096
   NUM_EPOCHS: 20
   RUN_ID: ""
-  # Optional: limit number of tasks for testing
   MAX_TASKS: ""
   # AWS credentials (required for S3 dataset download, optional for checkpoint upload)
   AWS_ACCESS_KEY_ID: ""
@@ -105,7 +80,6 @@ setup: |
   set -euo pipefail
   cd skyrl-train
 
-  # Validate required environment variables
   echo "Validating environment variables..."
   if [ -z "$FLEET_API_KEY" ]; then
     echo "ERROR: FLEET_API_KEY is required"
@@ -124,13 +98,11 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
-  # Override with vllm nightly (Qwen3.5 support requires nightly, not in stable until v0.17.0)
-  # --pre allows pre-release/dev versions; --extra-index-url adds nightly repo alongside PyPI
+  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
   # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  uv pip install -U --pre vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
-  python -c "import vllm; print(f'vLLM version: {vllm.__version__}')"
-  # Verify nightly installed (must contain 'dev' — stable 0.13+ doesn't have TransformersForCausalLM)
-  python -c "import vllm; v=vllm.__version__; print(f'vLLM {v}'); assert 'dev' in v, f'FATAL: Need nightly vLLM, got stable {v}. Nightly install may have failed.'"
+  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
+  # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
+  uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
   # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
   # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
   uv pip uninstall flash-attn
@@ -171,38 +143,8 @@ setup: |
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli
 
-  # Install OpenEnv for Fleet environment access (from branch with FleetTaskEnv)
   uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet-logfire" fleet-python logfire "mcp>=1.0.0"
 
-  # transformers from source: Qwen3.5 model type requires transformers>=4.58.0 (not in PyPI stable).
-  # MUST be installed LAST because litellm pins transformers<5.0 and would downgrade it.
-  # --force-reinstall ensures the git version overwrites even if uv thinks it's satisfied.
-  uv pip install -U "huggingface_hub>=0.30.0"
-  uv pip install --force-reinstall --no-deps "transformers @ git+https://github.com/huggingface/transformers.git"
-  python -c "import transformers; v=transformers.__version__; print(f'transformers={v}'); assert 'dev' in v or tuple(int(x) for x in v.split('.')[:2]) >= (4,58), f'FATAL: Need transformers>=4.58.0 (dev), got {v}. Qwen3.5 requires models.qwen3_5 module.'"
-  # Patch: vLLM nightly imports ALLOWED_LAYER_TYPES from transformers, but
-  # transformers main split it into ALLOWED_ATTENTION_LAYER_TYPES + ALLOWED_MLP_LAYER_TYPES.
-  python -c "import transformers.configuration_utils as cu, inspect; src=inspect.getfile(cu); has_it=hasattr(cu,'ALLOWED_LAYER_TYPES'); alias=getattr(cu,'ALLOWED_ATTENTION_LAYER_TYPES',None); print(f'ALLOWED_LAYER_TYPES exists={has_it}'); (not has_it and alias and (open(src,'a').write(chr(10)+'ALLOWED_LAYER_TYPES = ALLOWED_ATTENTION_LAYER_TYPES'+chr(10)) or print(f'Patched {src}'))) if not has_it and alias else None"
-  python -c "from transformers.configuration_utils import ALLOWED_LAYER_TYPES; print('ALLOWED_LAYER_TYPES OK:', ALLOWED_LAYER_TYPES)"
-
-  # Pre-download model weights to a local directory to avoid race condition
-  # when 4 FSDP + 4 vLLM workers all resolve HuggingFace cache simultaneously
-  MODEL_DIR="$HOME/models/Qwen3.5-9B"
-  echo "Pre-downloading Qwen/Qwen3.5-9B model weights to $MODEL_DIR..."
-  python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.5-9B', local_dir='$MODEL_DIR')"
-  echo "Model download complete. Files:"
-  ls -la "$MODEL_DIR"/*.safetensors 2>/dev/null | head -10
-  # Verify all shards present
-  python -c "import json,os,sys; idx=json.load(open('$MODEL_DIR/model.safetensors.index.json')); shards=set(idx['weight_map'].values()); missing=[s for s in shards if not os.path.exists(os.path.join('$MODEL_DIR',s))]; (print(f'ERROR: Missing shards: {missing}',file=sys.stderr) or sys.exit(1)) if missing else print(f'All {len(shards)} shards verified OK')"
-  # Always patch config.json to use TransformersForCausalLM backend in vLLM.
-  # This ensures vLLM loads Qwen3_5ForCausalLM via HuggingFace AutoModelForCausalLM —
-  # the same class FSDP uses — so weight names match exactly during NCCL weight sync.
-  # Native vLLM Qwen3.5 handler uses different weight naming + FlashInfer JIT, causing NCCL timeouts.
-  python -c "import json; cfg_path='$MODEL_DIR/config.json'; cfg=json.load(open(cfg_path)); orig=cfg.get('architectures',[]); cfg['architectures']=['TransformersForCausalLM']; cfg['num_nextn_predict_layers']=0; json.dump(cfg,open(cfg_path,'w'),indent=2); print(f'Patched config.json: {orig} -> TransformersForCausalLM, disabled MTP')"
-  # Remove MTP weights from safetensors index so vLLM doesn't try to load them
-  python -c "import json; idx_path='$MODEL_DIR/model.safetensors.index.json'; idx=json.load(open(idx_path)); orig_count=len(idx['weight_map']); idx['weight_map']={k:v for k,v in idx['weight_map'].items() if not k.startswith('model.mtp')}; json.dump(idx,open(idx_path,'w'),indent=2); print(f'Removed {orig_count - len(idx[\"weight_map\"])} MTP weights from index')"
-
-  # Download dataset from S3
   mkdir -p $HOME/data/fleet
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   S3_PATH="s3://${S3_DATASET_BUCKET}/${DATA_VERSION}/openenv/all_${MODALITY}.json"
@@ -211,7 +153,6 @@ setup: |
   TASK_COUNT=$(python3 -c "import json; print(len(json.load(open('$TASKS_FILE'))['tasks']))")
   echo "Downloaded $TASK_COUNT tasks for modality: $MODALITY"
 
-  # Prepare dataset (with optional env/difficulty filters)
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
   PREPARE_CMD="python -m integrations.fleet.prepare_dataset --tasks-json $TASKS_FILE --output-dir $DATA_DIR --modality $MODALITY"
   [ -n "$ENV_KEYS" ] && PREPARE_CMD="$PREPARE_CMD --env-filter $ENV_KEYS"
@@ -233,27 +174,17 @@ run: |
   # expandable_segments incompatible with vLLM memory pool in torch 2.10+
   # (AssertionError: pytorch/pytorch#147851)
 
-  # Debug: show all Ray worker logs (don't deduplicate) and NCCL debug info
-  export RAY_DEDUP_LOGS=0
-  export NCCL_DEBUG=WARN
-  export NCCL_DEBUG_SUBSYS=ALL
-  # Reduce NCCL timeout to fail fast instead of hanging for 10 minutes
-  export NCCL_TIMEOUT=300
-
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
 
-  # Login to Weights & Biases
   python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
 
-  # Ray cluster setup - limit object store to prevent disk exhaustion
   export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
-  export RAY_object_store_memory=10000000000  # 10GB limit for object store
+  export RAY_object_store_memory=10000000000
   if ! ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
     ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
   fi
 
-  # Wait for Ray
   for i in $(seq 1 24); do
     if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
       break
@@ -273,7 +204,7 @@ run: |
     environment.skyrl_gym.fleet_task.tasks_file="$TASKS_FILE" \
     environment.skyrl_gym.fleet_task.ttl_seconds=900 \
     trainer.algorithm.advantage_estimator="grpo" \
-    trainer.policy.model.path="$HOME/models/Qwen3.5-9B" \
+    trainer.policy.model.path="Qwen/Qwen3.5-9B" \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
     trainer.flash_attn=false \
@@ -283,7 +214,7 @@ run: |
     generator.num_inference_engines=$TOTAL_GPUS \
     generator.inference_engine_tensor_parallel_size=1 \
     trainer.epochs=${NUM_EPOCHS} \
-    trainer.eval_batch_size=24 \
+    trainer.eval_batch_size=12 \
     trainer.eval_before_train=true \
     trainer.eval_interval=20 \
     trainer.update_epochs_per_batch=1 \
@@ -294,7 +225,7 @@ run: |
     trainer.micro_forward_batch_size_per_gpu=1 \
     trainer.micro_train_batch_size_per_gpu=1 \
     trainer.ckpt_interval=10 \
-    trainer.max_prompt_length=$MAX_INPUT_LENGTH \
+    trainer.max_prompt_length=2048 \
     generator.max_input_length=$MAX_INPUT_LENGTH \
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
     generator.sampling_params.temperature=0.9 \
@@ -312,8 +243,7 @@ run: |
     generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.8 \
-    +generator.engine_init_kwargs.max_model_len=73728 \
+    generator.gpu_memory_utilization=0.85 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
