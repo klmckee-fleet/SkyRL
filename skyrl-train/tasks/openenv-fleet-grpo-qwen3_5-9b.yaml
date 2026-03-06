@@ -240,7 +240,7 @@ run: |
     generator.weight_sync_backend=nccl \
     generator.async_engine=true \
     generator.batched=false \
-    generator.chat_template_kwargs='{enable_thinking:true}' \
+    +generator.chat_template_kwargs='{enable_thinking:true}' \
     generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
