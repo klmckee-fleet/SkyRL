@@ -45,9 +45,9 @@ on:
           - harbor-grpo-qwen3-8b
         default: "openenv-fleet-grpo-qwen3_5-9b"
       data_version:
-        description: "Dataset version in S3 (v3=20,557 tasks, v4=15,169 tasks, v5=5,654 tasks recommended)"
+        description: "Dataset version in S3 (v3=20,557 tasks, v4=15,169 tasks, v52=latest curated)"
         type: string
-        default: "v5"
+        default: "v52"
       resume_run_name:
         description: "Resume from S3 checkpoint (W&B run name, e.g., fleet_tool_use_32b_d7167c1c)"
         type: string
