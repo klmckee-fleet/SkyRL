@@ -40,15 +40,6 @@ resources:
     - accelerators: H200-SXM:4
       cloud: primeintellect
       memory: 750+
-    # GCP spot fallback (preemptible, 64 GPU quota per region)
-    - accelerators: B200:4
-      cloud: gcp
-      use_spot: true
-      memory: 750+
-    - accelerators: H200:4
-      cloud: gcp
-      use_spot: true
-      memory: 750+
     # 8x GPUs fallback (when 4x capacity is exhausted)
     - accelerators: B200:8
       cloud: primeintellect
@@ -64,13 +55,13 @@ resources:
       cloud: lambda
     - accelerators: A100-80GB:8
       cloud: runpod
-    # # GCP spot fallback (preemptible, 64 GPU quota per region)
-    # - accelerators: B200:8
-    #   cloud: gcp
-    #   use_spot: true
-    # - accelerators: H200:8
-    #   cloud: gcp
-    #   use_spot: true
+    # GCP spot fallback (preemptible, 64 GPU quota per region)
+    - accelerators: B200:8
+      cloud: gcp
+      use_spot: true
+    - accelerators: H200:8
+      cloud: gcp
+      use_spot: true
 
 num_nodes: 1
 
