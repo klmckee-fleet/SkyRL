@@ -33,14 +33,16 @@ resources:
       cloud: nebius
     - accelerators: H200-SXM:8
       cloud: nebius
-    # GCP spot fallback — disabled until SkyPilot Ray conflict is resolved
-    # (SkyPilot's internal Ray on port 6380 conflicts with training Ray on 6479)
-    # - accelerators: B200:8
-    #   cloud: gcp
-    #   use_spot: true
-    # - accelerators: H200:8
-    #   cloud: gcp
-    #   use_spot: true
+    # GCP spot fallback — requires custom image with NVIDIA driver 570+
+    # (SkyPilot's default GCP GPU image has driver 535 which doesn't support H200)
+    - accelerators: B200:8
+      cloud: gcp
+      use_spot: true
+      image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
+    - accelerators: H200:8
+      cloud: gcp
+      use_spot: true
+      image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
 
 num_nodes: 1
 
