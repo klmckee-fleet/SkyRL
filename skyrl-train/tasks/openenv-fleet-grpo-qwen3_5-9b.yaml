@@ -178,12 +178,13 @@ run: |
 
   export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
   export RAY_object_store_memory=10000000000
-  # Stop any pre-existing Ray (e.g. SkyPilot's on port 6380) so it doesn't hold GPUs
-  ray stop --force 2>/dev/null || true
-  ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
+  # Use existing Ray if available (e.g. SkyPilot's on GCP), otherwise start one
+  if ! ray status >/dev/null 2>&1; then
+    ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
+  fi
 
   for i in $(seq 1 24); do
-    if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
+    if ray status >/dev/null 2>&1; then
       break
     fi
     sleep 5
