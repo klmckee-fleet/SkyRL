@@ -107,7 +107,10 @@ jobs:
           fi
 
       - name: Verify Cloud Credentials
-        run: sky check lambda runpod vast primeintellect nebius gcp || true
+        run: |
+          sky api stop || true
+          sky api start || true
+          sky check lambda runpod vast primeintellect nebius gcp || true
 
       - name: Validate data version
         run: |
