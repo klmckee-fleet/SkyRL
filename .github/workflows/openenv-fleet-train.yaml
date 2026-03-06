@@ -94,7 +94,7 @@ jobs:
           echo "${{ secrets.NEBIUS_TENANT_ID }}" > ~/.nebius/NEBIUS_TENANT_ID.txt
           # GCP: install gcloud CLI, write service account key, and activate
           if [ -n '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' ]; then
-            curl -sSL https://sdk.cloud.google.com/google-cloud-sdk.tar.gz | tar -xz -C $HOME
+            curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -xz -C $HOME
             echo "$HOME/google-cloud-sdk/bin" >> $GITHUB_PATH
             export PATH="$HOME/google-cloud-sdk/bin:$PATH"
             mkdir -p ~/.config/gcloud
