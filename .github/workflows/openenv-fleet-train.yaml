@@ -78,6 +78,12 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
     steps:
+      - name: Clean runner workspace
+        run: |
+          rm -rf "$RUNNER_TEMP"/* 2>/dev/null || true
+          mkdir -p "$RUNNER_TEMP/_runner_file_commands"
+          rm -rf "$GITHUB_WORKSPACE"/* 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
 
