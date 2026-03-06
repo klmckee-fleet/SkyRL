@@ -130,6 +130,7 @@ jobs:
           TIMESTAMP=$(date -u +"%Y%m%d-%H%M")
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           MODALITY=$(grep -E '^\s+MODALITY:' skyrl-train/tasks/${{ inputs.task_name }}.yaml | awk -F'"' '{print $2}')
+          [ -z "$MODALITY" ] && MODALITY="${{ inputs.modality }}"
           echo "modality=$MODALITY" >> $GITHUB_OUTPUT
           NUM_NODES=$(grep -E '^\s*num_nodes:' skyrl-train/tasks/${{ inputs.task_name }}.yaml | awk '{print $2}')
           if [ -n "$NUM_NODES" ] && [ "$NUM_NODES" != "1" ]; then
