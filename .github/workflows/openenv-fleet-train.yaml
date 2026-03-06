@@ -126,6 +126,7 @@ jobs:
           TIMESTAMP=$(date -u +"%Y%m%d-%H%M")
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           MODALITY=$(grep -E '^\s+MODALITY:' skyrl-train/tasks/${{ inputs.task_name }}.yaml | awk -F'"' '{print $2}')
+          [ -z "$MODALITY" ] && MODALITY="${{ inputs.modality }}"
           echo "modality=$MODALITY" >> $GITHUB_OUTPUT
           CLUSTER_NAME="fleet-${MODALITY}-${SHORT_SHA}-${TIMESTAMP}"
           CLUSTER_NAME=$(echo "$CLUSTER_NAME" | tr '_' '-' | tr '[:upper:]' '[:lower:]')
