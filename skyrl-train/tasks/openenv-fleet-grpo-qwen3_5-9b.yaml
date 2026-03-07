@@ -225,6 +225,7 @@ run: |
     trainer.max_prompt_length=2048 \
     generator.max_input_length=$MAX_INPUT_LENGTH \
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
+    generator.sampling_params.logprobs=null \
     generator.sampling_params.temperature=0.9 \
     generator.sampling_params.top_p=0.95 \
     generator.sampling_params.stop='["</tool_call>"]' \
