@@ -50,8 +50,8 @@ envs:
   FLEET_API_KEY: ""
   LOGGER: "wandb"
   INFERENCE_BACKEND: "vllm"
-  # Dataset version: "v52" (latest curated)
-  DATA_VERSION: "v52"
+  # Dataset version: "v53" (v52 minus github tasks)
+  DATA_VERSION: "v53"
   # Task selection: env_keys to filter (comma-separated, e.g., "github,booking,reddit")
   ENV_KEYS: ""
   # Difficulty filter: 1=easy, 2=medium, 3=hard (comma-separated, e.g., "1,2" for easy+medium)
