@@ -288,11 +288,33 @@ Before writing SQL queries, first explore the database schema:
 - List columns: SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'your_table'
 """
 
+        # Add computer_use-specific guidance
+        modality = self.task_config.get("task_modality", "tool_use")
+        computer_use_hints = ""
+        if modality == "computer_use":
+            computer_use_hints = """
+## Browser Interaction Strategy
+You are controlling a web browser via screenshots. Follow this loop:
+
+1. **Act**: Perform ONE action (click, type, scroll, etc.)
+2. **Observe**: Take a screenshot to see the result
+3. **Adapt**: If the screen hasn't changed, try a DIFFERENT action
+
+Key rules:
+- After clicking or typing, ALWAYS take a screenshot next to see what happened
+- NEVER repeat the same action more than twice. If it didn't work, try something different:
+  - Can't find an element by scrolling? Use the search bar or navigation menu instead
+  - Page not loading after a click? Try refreshing with key("F5") or clicking a different element
+  - Form not submitting? Check if required fields are missing
+- Use wait() only ONCE after a page navigation, then screenshot to check. Do not wait repeatedly
+- When the task is fully complete, say <done>. Do not keep clicking after finishing
+"""
+
         system_content = f"""You are a helpful agent. Complete the task by calling tools.
 
 ## Current Date
 Today's date is {current_date}. When dates are mentioned without a year, assume the current year ({datetime.now().year}) or a future date.
-{env_context}{env_hints}
+{env_context}{env_hints}{computer_use_hints}
 ## Available Tools
 {tools_json}
 
