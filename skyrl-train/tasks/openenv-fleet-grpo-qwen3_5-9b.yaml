@@ -100,9 +100,9 @@ setup: |
   uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
   # transformers 5.3.0+ includes Qwen3.5 support (merged Feb 9, released Mar 4)
   uv pip install -U "transformers>=5.3.0"
-  # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
-  # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
-  uv pip uninstall flash-attn
+  # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12.8 (community build)
+  # Re-enables flash attention kernels for training + efficient cross_entropy_loss for logprobs
+  uv pip install "https://github.com/lesj0910/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
   # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
@@ -204,7 +204,7 @@ run: |
     trainer.policy.model.path="Qwen/Qwen3.5-9B" \
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
-    trainer.flash_attn=false \
+    trainer.flash_attn=true \
     trainer.use_sample_packing=false \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
     trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
