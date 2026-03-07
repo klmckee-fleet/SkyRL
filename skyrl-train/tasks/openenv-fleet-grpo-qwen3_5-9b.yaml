@@ -22,10 +22,6 @@ resources:
       cloud: runpod
     - accelerators: B200:8
       cloud: runpod
-    - accelerators: H200-SXM:6
-      cloud: runpod
-    - accelerators: B200:6
-      cloud: runpod
     # Lambda: B200 available
     - accelerators: B200:8
       cloud: lambda
