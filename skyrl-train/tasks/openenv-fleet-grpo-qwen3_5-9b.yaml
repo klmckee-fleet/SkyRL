@@ -102,7 +102,7 @@ setup: |
   uv pip install -U "transformers>=5.3.0"
   # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12.8 (community build)
   # Re-enables flash attention kernels for training + efficient cross_entropy_loss for logprobs
-  uv pip install "https://github.com/lesj0910/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+  uv pip install "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
   # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
   uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
