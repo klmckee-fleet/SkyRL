@@ -26,16 +26,20 @@ except ImportError:
 from packaging.version import Version
 
 
-def _chunked_logprobs_only(hidden_chunk, labels_chunk, lm_head, temperature):
-    """Compute logprobs for one chunk. Used inside gradient_checkpoint."""
-    logits = lm_head(hidden_chunk)
+def _chunked_logprobs_only(hidden_chunk, labels_chunk, weight, bias, temperature):
+    """Compute logprobs for one chunk. Used inside gradient_checkpoint.
+    Uses F.linear with raw weight/bias to avoid DTensor issues with FSDP2.
+    """
+    logits = F.linear(hidden_chunk, weight, bias)
     logits = logits / temperature
     return logprobs_from_logits(logits, labels_chunk, inplace_backward=False)
 
 
-def _chunked_logprobs_and_entropy(hidden_chunk, labels_chunk, lm_head, temperature):
-    """Compute logprobs and entropy for one chunk. Used inside gradient_checkpoint."""
-    logits = lm_head(hidden_chunk)
+def _chunked_logprobs_and_entropy(hidden_chunk, labels_chunk, weight, bias, temperature):
+    """Compute logprobs and entropy for one chunk. Used inside gradient_checkpoint.
+    Uses F.linear with raw weight/bias to avoid DTensor issues with FSDP2.
+    """
+    logits = F.linear(hidden_chunk, weight, bias)
     logits = logits / temperature
     lp = logprobs_from_logits(logits, labels_chunk, inplace_backward=False)
     log_softmax_vals = F.log_softmax(logits, dim=-1)
@@ -490,23 +494,45 @@ class HFModelWrapper(nn.Module):
         all_log_probs = []
         all_entropy = [] if compute_entropy else None
 
+        # Extract weight/bias from lm_head module. With FSDP2, parameters are DTensors;
+        # calling the module inside gradient_checkpoint causes DTensor/Tensor mismatch.
+        # We all-gather DTensors to regular tensors via full_tensor() which is differentiable.
+        weight = lm_head.weight
+        bias = lm_head.bias
+        try:
+            from torch.distributed.tensor import DTensor
+
+            if isinstance(weight, DTensor):
+                weight = weight.full_tensor()
+            if bias is not None and isinstance(bias, DTensor):
+                bias = bias.full_tensor()
+        except ImportError:
+            pass
+
+        # When not computing gradients (ref model), skip gradient_checkpoint entirely —
+        # just compute each chunk directly with no_grad already active from caller.
+        use_checkpointing = torch.is_grad_enabled()
+
         for start in range(0, S, chunk_size):
             end = min(start + chunk_size, S)
             chunk_hidden = hidden_states[:, start:end]
             chunk_labels = labels[:, start:end]
 
-            # Gradient checkpointing: logits are discarded after forward and recomputed
-            # during backward, so only one chunk's logits (~chunk_size * vocab * 2 bytes)
-            # is in memory at a time.
             if compute_entropy:
-                chunk_lp, chunk_ent = gradient_checkpoint(
-                    _chunked_logprobs_and_entropy,
-                    chunk_hidden,
-                    chunk_labels,
-                    lm_head,
-                    temperature,
-                    use_reentrant=False,
-                )
+                if use_checkpointing:
+                    chunk_lp, chunk_ent = gradient_checkpoint(
+                        _chunked_logprobs_and_entropy,
+                        chunk_hidden,
+                        chunk_labels,
+                        weight,
+                        bias,
+                        temperature,
+                        use_reentrant=False,
+                    )
+                else:
+                    chunk_lp, chunk_ent = _chunked_logprobs_and_entropy(
+                        chunk_hidden, chunk_labels, weight, bias, temperature
+                    )
                 if not entropy_requires_grad:
                     chunk_ent = chunk_ent.detach()
                 if attention_mask is not None:
@@ -514,14 +540,20 @@ class HFModelWrapper(nn.Module):
                     chunk_ent = chunk_ent * chunk_mask
                 all_entropy.append(chunk_ent)
             else:
-                chunk_lp = gradient_checkpoint(
-                    _chunked_logprobs_only,
-                    chunk_hidden,
-                    chunk_labels,
-                    lm_head,
-                    temperature,
-                    use_reentrant=False,
-                )
+                if use_checkpointing:
+                    chunk_lp = gradient_checkpoint(
+                        _chunked_logprobs_only,
+                        chunk_hidden,
+                        chunk_labels,
+                        weight,
+                        bias,
+                        temperature,
+                        use_reentrant=False,
+                    )
+                else:
+                    chunk_lp = _chunked_logprobs_only(
+                        chunk_hidden, chunk_labels, weight, bias, temperature
+                    )
 
             all_log_probs.append(chunk_lp)
 
