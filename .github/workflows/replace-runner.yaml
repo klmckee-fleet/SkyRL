@@ -134,7 +134,7 @@ jobs:
         run: |
           echo "Waiting for runner to register online (up to 10 min)..."
           for i in $(seq 1 60); do
-            RUNNER_STATUS=$(gh api "repos/${{ github.repository }}/actions/runners" --paginate --jq ".runners[] | select(.name == \"${{ steps.config.outputs.runner_name }}\") | .status" 2>/dev/null)
+            RUNNER_STATUS=$(gh api "repos/${{ github.repository }}/actions/runners" --paginate --jq ".runners[] | select(.name == \"${{ steps.config.outputs.runner_name }}\") | .status" 2>/dev/null || echo "unknown")
             if [ "$RUNNER_STATUS" = "online" ]; then
               echo "✅ Runner ${{ steps.config.outputs.runner_name }} is online!"
               echo "✅ **Runner is online and ready**" >> $GITHUB_STEP_SUMMARY
