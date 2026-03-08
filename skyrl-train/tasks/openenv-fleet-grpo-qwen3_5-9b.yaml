@@ -135,6 +135,9 @@ setup: |
   "$CUDA_HOME/bin/nvcc" --version
   echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
+  # Rebuild causal-conv1d with CUDA now that nvcc is available
+  # (uv sync skips CUDA build via CAUSAL_CONV1D_SKIP_CUDA_BUILD; rebuild here with proper CUDA)
+  uv pip install --no-build-isolation --force-reinstall causal-conv1d
   uv pip install wandb boto3 awscli
 
   uv pip install "litellm>=1.75.5" fleet-python logfire "mcp>=1.0.0"
