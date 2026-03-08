@@ -90,6 +90,7 @@ transformer-engine-torch = [{requirement = "torch", match-runtime = true}, "buil
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE"}
+causal-conv1d = { CAUSAL_CONV1D_SKIP_CUDA_BUILD = "TRUE" }
 
 [tool.uv.sources]
 skyrl-gym = { path = "./skyrl-gym" , editable = true }
