@@ -327,7 +327,9 @@ class VLLMInferenceEngine(BaseVLLMInferenceEngine):
             await asyncio.to_thread(engine.abort_request, unfinished_request_ids)
 
         level = 1 if self._is_lora else kwargs.get("level", 2)
+        logger.info(f"Sleeping vLLM engine (level={level})...")
         await asyncio.to_thread(self.llm.sleep, level=level)
+        logger.info(f"vLLM engine sleep complete (level={level})")
 
     async def init_weight_update_communicator(self, init_info: "WeightSyncInitInfo"):
         import pickle
