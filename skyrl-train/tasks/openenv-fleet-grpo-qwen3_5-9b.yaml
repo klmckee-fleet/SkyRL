@@ -6,7 +6,7 @@
 # Model: Qwen/Qwen3.5-9B (9B parameters, natively multimodal, early fusion + GatedDeltaNet)
 # GPUs: 8x B200/H200 (RunPod, Lambda, Vast, Nebius)
 #
-# NOTE: Requires vLLM nightly (>=0.16.1.dev0) — Qwen3.5 support not in stable until v0.17.0
+# NOTE: Requires vLLM >= 0.17.0 for native Qwen3.5/GDN support + FlashAttention 4
 #
 # v0.1: Initial Qwen3.5-9B support with step-wise training
 
@@ -94,17 +94,13 @@ setup: |
 
   uv venv --python 3.12 --seed
   source .venv/bin/activate
+  # vLLM 0.17.0 has native Qwen3.5 support (GDN via torch.ops.vllm.gdn_attention_core),
+  # FlashAttention 4, and PyTorch 2.10.0
   uv sync --extra vllm
-  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
-  # --torch-backend=auto handles torch+torchvision ABI matching automatically
-  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
-  # transformers 5.3.0+ includes Qwen3.5 support (merged Feb 9, released Mar 4)
-  uv pip install -U "transformers>=5.3.0"
-  # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12.8 (community build)
-  # Re-enables flash attention kernels for training + efficient cross_entropy_loss for logprobs
+  # transformers from source: Qwen3.5 model type not in stable release yet
+  uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
+  # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12 (training forward/backward)
   uv pip install "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
-  # Remove stale flashinfer-jit-cache (0.5.3+cu128 from uv sync) so flashinfer 0.6.4 regenerates it
-  uv pip uninstall flashinfer-jit-cache || true
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
   # pip CUDA packages are incomplete (missing nv/target headers); use NVIDIA apt repo instead
@@ -207,6 +203,7 @@ run: |
     trainer.placement.colocate_all=true \
     trainer.strategy=fsdp2 \
     trainer.flash_attn=true \
+    trainer.loss_chunk_size=4096 \
     trainer.use_sample_packing=false \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
     trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \

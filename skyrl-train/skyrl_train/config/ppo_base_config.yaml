@@ -168,6 +168,10 @@ trainer:
     # Default value is: policy_mini_batch_size * (max_staleness_steps / 2 + 1) = 256 * (4 / 2 + 1) = 768
     num_parallel_generation_workers: 768
 
+  # Chunk size for lm_head logprobs computation. When > 0, avoids materializing the full
+  # (B, S, vocab_size) logits tensor by computing lm_head in chunks along the sequence dim.
+  # Reduces peak memory from O(S * V) to O(chunk_size * V). Set to 0 to disable.
+  loss_chunk_size: 0
   gradient_checkpointing: true
   gradient_checkpointing_use_reentrant: false
   seed: 42
@@ -250,9 +254,6 @@ generator:
   max_turns: 1
   # Maximum time (seconds) for a single trajectory before timeout. 0 = no timeout.
   trajectory_timeout_seconds: 900
-  # Maximum time (seconds) for the entire batch of trajectories. 0 = use 2x trajectory_timeout_seconds.
-  # When the batch timeout fires, remaining trajectories are cancelled with zero reward.
-  batch_timeout_seconds: 0
   # Inject context status line into observations (e.g., "[Context: 24K/48K tokens (50%)]")
   # Useful for training models to use context management tools
   inject_context_status: false
