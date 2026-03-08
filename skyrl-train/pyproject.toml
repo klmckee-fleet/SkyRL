@@ -39,8 +39,6 @@ dependencies = [
     "jaxtyping",
     "skyrl-gym",
     "flash-attn",
-    "causal-conv1d",
-    "flash-linear-attention",
     "polars",
     "s3fs",
     "fastapi",
@@ -80,6 +78,7 @@ no-build-isolation-package = [
 override-dependencies = [
     "nvidia-resiliency-ext; sys_platform == 'never'",
     "mamba-ssm; sys_platform == 'never'",
+    "causal-conv1d; sys_platform == 'never'",
     "transformer-engine[pytorch]==2.10.0",
     "megatron-core==0.15.0"
 ]
