@@ -161,15 +161,15 @@ run: |
   cd skyrl-train
   source .venv/bin/activate
 
+  # Raise fd limit — Ray + 8 vLLM engines + FSDP workers exhaust 1024 default
+  ulimit -n 65536
+
   TMP_DIR="$HOME/skyrl-tmp"
   mkdir -p "$TMP_DIR"
   export TMPDIR="$TMP_DIR"
 
   # CUDA_HOME for FlashInfer JIT compilation (GatedDeltaNet kernels)
   source "$HOME/.cuda_env" 2>/dev/null || true
-
-  # expandable_segments incompatible with vLLM memory pool in torch 2.10+
-  # (AssertionError: pytorch/pytorch#147851)
 
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
   DATA_DIR="$HOME/data/fleet/${MODALITY}"
@@ -178,6 +178,8 @@ run: |
 
   export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
   export RAY_object_store_memory=10000000000
+  # Give NCCL more time during vLLM→FSDP transitions
+  export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=900
   if ! ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
     ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
   fi
