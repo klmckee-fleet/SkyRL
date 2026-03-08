@@ -578,6 +578,27 @@ class SkyRLGymGenerator(GeneratorInterface):
                 return StepWiseOutput(step_outputs=[overlong_prompt_output])
             return overlong_prompt_output
 
+        # Guard: if prompt exceeded max_input_length before any generation happened,
+        # response_end_idx is still None. Return a zero-reward trajectory.
+        if agent_loop_state.response_end_idx is None and not per_step_rewards:
+            logger.warning(
+                f"[env={env_key}] Prompt too long ({len(initial_input_ids)} tokens > {max_input_length}) "
+                f"for session {session_id}. Returning zero-reward trajectory."
+            )
+            zero_reward = 0.0 if self.custom_chat_template else [0.0]
+            overlong_prompt_output = TrajectoryOutput(
+                response_ids=[self.tokenizer.eos_token_id],
+                reward=zero_reward,
+                stop_reason="length",
+                loss_mask=[0],
+                prompt_ids=initial_input_ids,
+                rollout_logprobs=[0.0],
+                env_metrics=env_metrics,
+            )
+            if is_step_wise:
+                return StepWiseOutput(step_outputs=[overlong_prompt_output])
+            return overlong_prompt_output
+
         prompt_ids = agent_loop_state.input_ids[:initial_prompt_length]
         rollout_logprobs = None
         response_ids = None
@@ -586,29 +607,6 @@ class SkyRLGymGenerator(GeneratorInterface):
         # We remove the final observation messages /token IDs here
         # Note that during the agent loop, we still add the final observation messages/ tokens because we terminate the agent loop if the input length
         # exceeds the maximum
-
-        # Handle case where prompt exceeded max_input_length before any generation
-        if agent_loop_state.response_end_idx is None and not retokenize_chat_history:
-            logger.warning(
-                f"No generation occurred for session {session_id} "
-                f"(prompt length {initial_prompt_length} may exceed max_input_length {max_input_length}). "
-                f"Returning zero-reward trajectory."
-            )
-            await self._env_close(env)
-            zero_reward = 0.0 if self.custom_chat_template else [0.0]
-            overlong_output = TrajectoryOutput(
-                response_ids=[self.tokenizer.eos_token_id],
-                reward=zero_reward,
-                stop_reason="length",
-                loss_mask=[0],
-                prompt_ids=initial_input_ids,
-                rollout_logprobs=[0.0],
-                env_metrics={"prompt_too_long": 1.0},
-            )
-            if is_step_wise:
-                return StepWiseOutput(step_outputs=[overlong_output])
-            return overlong_output
-
         if retokenize_chat_history:
             response_encodings = self.tokenizer.apply_chat_template(
                 agent_loop_state.chat_history[
