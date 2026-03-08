@@ -11,7 +11,7 @@
 # GPUs: 4x B200/H200 (text-only fits like 8B)
 # Single-turn: one generation = one task = one episode
 #
-# NOTE: Requires vLLM nightly (>=0.16.1.dev0) — Qwen3.5 support not in stable until v0.17.0
+# Requires vLLM >= 0.17.0 (native Qwen3.5/GDN support)
 
 name: task-gen-grpo-qwen3-5-9b
 
@@ -95,15 +95,10 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
   uv sync --extra vllm
-  # Override with vllm nightly (Qwen3.5 support not in stable until v0.17.0)
-  uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
   # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
   uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
-  # flash-attn 2.8.3 only supports torch<=2.9, incompatible with torch 2.10 (vllm nightly)
-  # vLLM uses FlashInfer instead; training uses SDPA (PyTorch's built-in flash attention)
-  uv pip uninstall flash-attn
-  # Remove stale flashinfer-jit-cache so flashinfer 0.6.4 regenerates it
-  uv pip uninstall flashinfer-jit-cache || true
+  # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12.8 (community build)
+  uv pip install "https://github.com/lesj0910/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
   python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
   # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
   CUDA_HOME=""
@@ -221,6 +216,7 @@ run: |
     trainer.policy_mini_batch_size=4 \
     trainer.micro_forward_batch_size_per_gpu=1 \
     trainer.micro_train_batch_size_per_gpu=1 \
+    trainer.loss_chunk_size=4096 \
     trainer.ckpt_interval=10 \
     trainer.max_prompt_length=$MAX_INPUT_LENGTH \
     generator.max_input_length=$MAX_INPUT_LENGTH \
