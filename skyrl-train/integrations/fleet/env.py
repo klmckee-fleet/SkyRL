@@ -309,6 +309,8 @@ Key rules:
 - Use wait() only ONCE after a page navigation, then screenshot to check. Do not wait repeatedly
 - When the task is fully complete, say <done>. Do not keep clicking after finishing
 """
+        tool_names = [t["function"]["name"] for t in self.tools if "function" in t]
+        tool_names_str = ", ".join(tool_names)
 
         system_content = f"""You are a helpful agent. Complete the task by calling tools.
 
@@ -319,7 +321,8 @@ Today's date is {current_date}. When dates are mentioned without a year, assume 
 {tools_json}
 
 ## Tool Call Format
-<tool_call>{{"name": "tool_name", "arguments": {{"param": "value"}}}}</tool_call>
+Use the tools listed above by name ({tool_names_str}). Format each call as:
+<tool_call>{{"name": "<tool_name_from_above>", "arguments": {{...}}}}</tool_call>
 
 ## Error Handling
 If a tool call returns an error:
