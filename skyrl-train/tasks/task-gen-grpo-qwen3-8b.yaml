@@ -133,7 +133,7 @@ setup: |
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   # Rebuild causal-conv1d with CUDA now that nvcc is available
   # (uv sync skips CUDA build via CAUSAL_CONV1D_SKIP_CUDA_BUILD; rebuild here with proper CUDA)
-  uv pip install --no-build-isolation --force-reinstall causal-conv1d
+  CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall "causal-conv1d==1.5.3.post1"
   uv pip install wandb boto3 awscli supabase
 
   # Install OpenEnv (from branch) for tool discovery during dataset prep
