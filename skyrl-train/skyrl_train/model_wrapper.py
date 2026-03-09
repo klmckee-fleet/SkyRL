@@ -551,9 +551,7 @@ class HFModelWrapper(nn.Module):
                         use_reentrant=False,
                     )
                 else:
-                    chunk_lp = _chunked_logprobs_only(
-                        chunk_hidden, chunk_labels, weight, bias, temperature
-                    )
+                    chunk_lp = _chunked_logprobs_only(chunk_hidden, chunk_labels, weight, bias, temperature)
 
             all_log_probs.append(chunk_lp)
 
