@@ -209,12 +209,13 @@ class RayPPOTrainer:
 
         self.dispatch.prepare_for_weight_sync()
         if self.colocate_all:
-            await self.inference_engine_client.wake_up(tags=["weights"])
+            # Wake up all memory at once to avoid race where engine scheduler fires between
+            # weight and kv_cache wake-up, hitting freed sampling metadata (CUDA error).
+            # Stale weights are immediately overwritten by broadcast_to_inference_engines.
+            await self.inference_engine_client.wake_up()
         with Timer("sync_weights"):
             self.dispatch.broadcast_to_inference_engines(self.inference_engine_client)
         self.dispatch.finish_weight_sync()
-        if self.colocate_all:
-            await self.inference_engine_client.wake_up(tags=["kv_cache"])
 
         # Eval before training - always log at step 0 regardless of resumed checkpoint
         if self.cfg.trainer.eval_interval > 0 and self.cfg.trainer.eval_before_train:
@@ -342,12 +343,10 @@ class RayPPOTrainer:
                     # 7. sync weights to inference engines
                     self.dispatch.prepare_for_weight_sync()
                     if self.colocate_all:
-                        await self.inference_engine_client.wake_up(tags=["weights"])
+                        await self.inference_engine_client.wake_up()
                     with Timer("sync_weights", self.all_timings):
                         self.dispatch.broadcast_to_inference_engines(self.inference_engine_client)
                     self.dispatch.finish_weight_sync()
-                    if self.colocate_all:
-                        await self.inference_engine_client.wake_up(tags=["kv_cache"])
 
                 # 8. set logs
                 logger.info(status)

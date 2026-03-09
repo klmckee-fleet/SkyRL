@@ -212,7 +212,7 @@ run: |
     trainer.epochs=${NUM_EPOCHS} \
     trainer.eval_batch_size=12 \
     trainer.eval_before_train=true \
-    trainer.eval_interval=20 \
+    trainer.eval_interval=10 \
     trainer.update_epochs_per_batch=1 \
     trainer.train_batch_size=24 \
     trainer.use_hybrid_env_sampling=true \
@@ -239,10 +239,11 @@ run: |
     generator.async_engine=true \
     generator.batched=false \
     +generator.chat_template_kwargs='{enable_thinking:true}' \
+    +generator.engine_init_kwargs.mm_processor_cache_gb=0 \
     generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.85 \
+    generator.gpu_memory_utilization=0.80 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-browser-use-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
