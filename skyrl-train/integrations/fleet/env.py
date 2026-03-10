@@ -208,6 +208,81 @@ class FleetTaskEnv(BaseTextEnv):
 
         return config
 
+    def _adapt_computer_tool_for_qwen(self):
+        """Adapt the computer tool description for Qwen VL models.
+
+        Qwen3-VL/3.5 models output coordinates in a normalized [0, 1000] grid
+        regardless of actual screen resolution. This method:
+        1. Parses the actual screen dimensions from the tool description
+        2. Rewrites the description to use [0, 1000] coordinate range
+
+        Coordinates are converted back to pixels in step_async() before MCP execution.
+        Ref: https://github.com/QwenLM/Qwen3-VL/issues/1521
+        """
+        for tool in self.tools:
+            func = tool.get("function", {})
+            if func.get("name") != "computer":
+                continue
+
+            desc = func.get("description", "")
+
+            # Parse actual screen dimensions: "Screen resolution: 1366x768 pixels"
+            res_match = re.search(r"Screen resolution:\s*(\d+)x(\d+)", desc)
+            if res_match:
+                self.screen_width = int(res_match.group(1))
+                self.screen_height = int(res_match.group(2))
+            else:
+                self.screen_width = 1366
+                self.screen_height = 768
+
+            w, h = self.screen_width, self.screen_height
+
+            # Rewrite description for Qwen's [0, 1000] coordinate space
+            desc = re.sub(
+                r"Screen resolution:\s*\d+x\d+\s*pixels\s*(\([^)]*\))?",
+                "Screen resolution: 1000x1000",
+                desc,
+            )
+            desc = re.sub(
+                r"\(0, 0\) is top-left,\s*\(\d+, \d+\) is bottom-right",
+                "(0, 0) is top-left, (999, 999) is bottom-right",
+                desc,
+            )
+            desc = re.sub(
+                r"valid range: x=0-\d+, y=0-\d+",
+                "valid range: x=0-999, y=0-999",
+                desc,
+            )
+            desc = re.sub(
+                r"JPEG format at \d+x\d+",
+                "JPEG format at 1000x1000",
+                desc,
+            )
+            func["description"] = desc
+
+            logger.info(
+                f"Adapted computer tool for Qwen VL: actual_screen={w}x{h}, " f"model coordinate space=[0, 1000]"
+            )
+            break
+
+    def _convert_qwen_coordinates(self, tool_call: Dict[str, Any]):
+        """Convert Qwen's [0, 1000] normalized coordinates to pixel coordinates.
+
+        Modifies tool_call arguments in-place.
+        """
+        if not self.screen_width or not self.screen_height:
+            return
+        args = tool_call.get("arguments", {})
+        if not args or tool_call.get("name") != "computer":
+            return
+        for field in ("coordinate", "start_coordinate"):
+            coords = args.get(field)
+            if coords and isinstance(coords, (list, tuple)) and len(coords) == 2:
+                args[field] = [
+                    int(coords[0] / 1000 * self.screen_width),
+                    int(coords[1] / 1000 * self.screen_height),
+                ]
+
     async def init_async(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """
         Initialize the Fleet environment and return initial observation (async version).
@@ -246,6 +321,17 @@ class FleetTaskEnv(BaseTextEnv):
 
         # Get tools from observation (cached from __init__)
         self.tools = obs.get("tools", [])
+
+        # For computer_use: adapt coordinate system for Qwen VL models
+        # Qwen3-VL/3.5 output coordinates in normalized [0, 1000] space (pre-trained convention).
+        # The MCP server's computer tool expects pixel coordinates.
+        # We rewrite the tool description to [0, 1000] and convert back in step_async().
+        # Ref: https://github.com/QwenLM/Qwen3-VL/issues/1521
+        modality = self.task_config.get("task_modality", "tool_use")
+        self.screen_width = None
+        self.screen_height = None
+        if modality == "computer_use":
+            self._adapt_computer_tool_for_qwen()
 
         # Add context management tools if enabled
         if self.context_manager:
@@ -394,6 +480,10 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         # Parse tool call from LLM response
         tool_call = parse_tool_call(action)
+
+        # Convert Qwen's [0, 1000] normalized coordinates to pixel coordinates
+        if tool_call:
+            self._convert_qwen_coordinates(tool_call)
 
         # Check if agent signals completion
         has_done_signal = "<done>" in action.lower() or "[done]" in action.lower()
