@@ -232,6 +232,7 @@ run: |
     generator.eval_sampling_params.stop='["</tool_call>"]' \
     trainer.policy.optimizer_config.lr=1.0e-6 \
     trainer.algorithm.use_kl_loss=true \
+    trainer.algorithm.loss_reduction="sequence_mean" \
     generator.max_turns=$MAX_TURNS \
     generator.backend=$INFERENCE_BACKEND \
     generator.run_engines_locally=true \
