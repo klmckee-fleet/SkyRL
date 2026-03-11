@@ -86,6 +86,9 @@ async def evaluate(
         reward=generator_output["rewards"][0],
     )
 
+    # Log eval stop_reason breakdown by environment
+    _log_eval_stop_reasons(concat_generator_outputs, concat_data_sources, global_step)
+
     # 2. Group data by data source and calculate per-dataset metrics
     eval_metrics = calculate_per_dataset_metrics(
         concat_generator_outputs, concat_uids, concat_data_sources, cfg.generator.eval_n_samples_per_prompt
@@ -208,6 +211,9 @@ async def evaluate_step_wise(
     vis = tokenizer.decode(generator_output["response_ids"][0])
     logger.info(f"Eval output example: {vis}")
 
+    # Log eval stop_reason breakdown by environment
+    _log_eval_stop_reasons(concat_generator_outputs, concat_data_sources, global_step)
+
     # Only use the final step metrics
     generator_output_last_step = defaultdict(list)
     is_last_step_mask = concat_generator_outputs["is_last_step"]
@@ -281,3 +287,56 @@ async def evaluate_step_wise(
                 logger.warning(f"Failed to upload eval results to S3: {e}")
 
     return eval_metrics
+
+
+def _log_eval_stop_reasons(
+    generator_output: GeneratorOutput,
+    data_sources: List[str],
+    global_step: int | None,
+) -> None:
+    """Log stop_reason breakdown by environment during eval.
+
+    Outputs a table to logs showing per-env counts of each stop_reason
+    (stop, timeout, batch_timeout, env_init_failed, etc.) so failures
+    are visible in GHA logs without needing WandB.
+    """
+    stop_reasons = generator_output.get("stop_reasons")
+    if not stop_reasons:
+        return
+
+    # Count (data_source, stop_reason) pairs
+    env_stop_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for ds, sr in zip(data_sources, stop_reasons):
+        env_stop_counts[ds or "unknown"][sr] += 1
+
+    # Collect all stop_reasons seen
+    all_reasons = sorted({sr for counts in env_stop_counts.values() for sr in counts})
+
+    # Log summary
+    step_label = f"step {global_step}" if global_step is not None else "eval_only"
+    total = len(stop_reasons)
+    non_stop = sum(1 for sr in stop_reasons if sr != "stop")
+
+    if non_stop > 0:
+        logger.warning(
+            f"Eval stop_reason summary ({step_label}): {non_stop}/{total} "
+            f"non-stop trajectories ({100 * non_stop / total:.1f}%)"
+        )
+    else:
+        logger.info(f"Eval stop_reason summary ({step_label}): all {total} trajectories completed normally")
+
+    # Build per-environment table
+    header = f"  {'Environment':<30} {'total':>6}"
+    for reason in all_reasons:
+        header += f" {reason:>16}"
+    logger.info(header)
+    logger.info("  " + "-" * (len(header) - 2))
+
+    for env in sorted(env_stop_counts):
+        counts = env_stop_counts[env]
+        env_total = sum(counts.values())
+        row = f"  {env:<30} {env_total:>6}"
+        for reason in all_reasons:
+            count = counts.get(reason, 0)
+            row += f" {count:>16}"
+        logger.info(row)

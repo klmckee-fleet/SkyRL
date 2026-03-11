@@ -487,8 +487,6 @@ class HFModelWrapper(nn.Module):
         computes lm_head in chunks of `chunk_size` tokens along the sequence dimension.
         Each chunk uses gradient checkpointing so logits are recomputed during backward
         rather than stored, keeping peak memory at (B, chunk_size, vocab_size).
-
-        Ported from upstream SkyRL's JAX backend (PR #902, loss_chunk_size).
         """
         B, S, H = hidden_states.shape
         all_log_probs = []

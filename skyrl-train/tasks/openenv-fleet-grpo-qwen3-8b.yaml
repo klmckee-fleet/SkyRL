@@ -46,11 +46,6 @@ resources:
     - accelerators: H200-SXM:4
       cloud: primeintellect
       memory: 750+
-    # GCP spot H200 fallback (preemptible, 64 GPU quota per region)
-    - accelerators: H200:4
-      cloud: gcp
-      use_spot: true
-      memory: 750+
 
 num_nodes: 1
 
@@ -183,7 +178,6 @@ run: |
     data.val_data="['${DATA_DIR}/validation.parquet']" \
     environment.env_class=fleet_task \
     environment.skyrl_gym.fleet_task.tasks_file="$TASKS_FILE" \
-    environment.skyrl_gym.fleet_task.ttl_seconds=900 \
     trainer.algorithm.advantage_estimator="grpo" \
     trainer.policy.model.path="Qwen/Qwen3-8B" \
     ++trainer.rope_scaling.rope_type=yarn \
@@ -204,8 +198,8 @@ run: |
     trainer.use_hybrid_env_sampling=true \
     trainer.min_samples_per_env=1 \
     trainer.policy_mini_batch_size=24 \
-    trainer.micro_forward_batch_size_per_gpu=1 \
-    trainer.micro_train_batch_size_per_gpu=1 \
+    trainer.micro_forward_batch_size_per_gpu=2 \
+    trainer.micro_train_batch_size_per_gpu=2 \
     trainer.ckpt_interval=10 \
     trainer.max_prompt_length=2048 \
     generator.max_input_length=$MAX_INPUT_LENGTH \

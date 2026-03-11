@@ -37,15 +37,14 @@ on:
         description: "SkyPilot task name (YAML file in skyrl-train/tasks/)"
         type: choice
         options:
-          - openenv-fleet-grpo-qwen3_5-9b
           - openenv-fleet-grpo-qwen3-8b
           - openenv-fleet-grpo-qwen3-32b
           - openenv-fleet-grpo-qwen3-8b-step-wise
           - openenv-fleet-grpo-qwen3-vl-8b
-          - harbor-grpo-qwen3-8b
-        default: "openenv-fleet-grpo-qwen3_5-9b"
+          - openenv-fleet-grpo-qwen3_5-9b
+        default: "openenv-fleet-grpo-qwen3-8b"
       data_version:
-        description: "Dataset version in S3 (v3=20,557 tasks, v4=15,169 tasks, v52=latest curated)"
+        description: "Dataset version in S3 (v3=20,557, v4=15,169, v5=5,674, v51=5,542, v52=613 CU easiest envs)"
         type: string
         default: "v52"
       resume_run_name:
@@ -80,16 +79,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          clean: true
 
       - name: Configure Cloud Credentials
         run: |
           mkdir -p ~/.lambda_cloud && echo "api_key = ${{ secrets.LAMBDA_API_KEY }}" > ~/.lambda_cloud/lambda_keys
           pip3 install runpod 2>/dev/null || true && runpod config "${{ secrets.RUNPOD_API_KEY }}" || true
           mkdir -p ~/.config/vastai && echo "${{ secrets.VAST_API_KEY }}" > ~/.config/vastai/vast_api_key
-          pip3 install prime 2>/dev/null || true && prime config set-api-key "${{ secrets.PRIME_INTELLECT_API_KEY }}" || true
-          pip3 install "skypilot-nightly[primeintellect]" 2>/dev/null || true
+          mkdir -p ~/.prime && echo '{"api_key":"${{ secrets.PRIME_INTELLECT_API_KEY }}","team_id":"cmlbfw5do0000kvf10e4pegd0"}' > ~/.prime/config.json
+          pip3 install "skypilot-nightly[primeintellect,nebius]" 2>/dev/null || true
           mkdir -p ~/.nebius && echo '${{ secrets.NEBIUS_CREDENTIALS_JSON }}' > ~/.nebius/credentials.json
           echo "${{ secrets.NEBIUS_TENANT_ID }}" > ~/.nebius/NEBIUS_TENANT_ID.txt
           # GCP: install gcloud CLI, write service account key, and activate
@@ -107,10 +104,7 @@ jobs:
           fi
 
       - name: Verify Cloud Credentials
-        run: |
-          sky api stop || true
-          sky api start || true
-          sky check lambda runpod vast primeintellect nebius gcp || true
+        run: sky check lambda runpod vast primeintellect nebius gcp || true
 
       - name: Validate data version
         run: |
@@ -124,14 +118,14 @@ jobs:
         run: |
           TIMESTAMP=$(date -u +"%Y%m%d-%H%M")
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          MODALITY=$(grep -E '^\s+MODALITY:' skyrl-train/tasks/${{ inputs.task_name }}.yaml | awk -F'"' '{print $2}')
-          echo "modality=$MODALITY" >> $GITHUB_OUTPUT
-          CLUSTER_NAME="fleet-${MODALITY}-${SHORT_SHA}-${TIMESTAMP}"
+          CLUSTER_NAME="fleet-${SHORT_SHA}-${TIMESTAMP}"
           CLUSTER_NAME=$(echo "$CLUSTER_NAME" | tr '_' '-' | tr '[:upper:]' '[:lower:]')
           echo "name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
           RUN_ID=$(head -c 4 /dev/urandom | xxd -p)
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-          echo "wandb_run_name=fleet_${MODALITY}_${RUN_ID}" >> $GITHUB_OUTPUT
+          echo "wandb_run_name=fleet_${RUN_ID}" >> $GITHUB_OUTPUT
+          MODALITY=$(grep -E '^\s+MODALITY:' skyrl-train/tasks/${{ inputs.task_name }}.yaml | awk -F'"' '{print $2}')
+          echo "modality=$MODALITY" >> $GITHUB_OUTPUT
 
       - name: Notify Slack - Starting
         if: ${{ inputs.disable_slack != true }}
@@ -149,8 +143,8 @@ jobs:
                 { "type": "section", "fields": [
                   { "type": "mrkdwn", "text": "*Cluster:*\n`${{ steps.cluster.outputs.name }}`" },
                   { "type": "mrkdwn", "text": "*Task:*\n`${{ inputs.task_name }}`" },
-                  { "type": "mrkdwn", "text": "*Modality:*\n`${{ steps.cluster.outputs.modality }}`" },
-                  { "type": "mrkdwn", "text": "*WandB:*\n`${{ steps.cluster.outputs.wandb_run_name }}`" }
+                  { "type": "mrkdwn", "text": "*WandB:*\n`${{ steps.cluster.outputs.wandb_run_name }}`" },
+                  { "type": "mrkdwn", "text": "*Modality:*\n`${{ steps.cluster.outputs.modality }}`" }
                 ]},
                 { "type": "context", "elements": [
                   { "type": "mrkdwn", "text": "Triggered by: ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow> | <https://wandb.ai/thefleet/fleet-task-grpo|WandB>" }
@@ -183,11 +177,16 @@ jobs:
           [ -n "${{ inputs.max_tasks }}" ] && LAUNCH_CMD="$LAUNCH_CMD --env MAX_TASKS=${{ inputs.max_tasks }}"
           [ -n "${{ inputs.resume_run_name }}" ] && LAUNCH_CMD="$LAUNCH_CMD --env RESUME_RUN_NAME=${{ inputs.resume_run_name }}"
           LAUNCH_CMD="$LAUNCH_CMD --env RUN_ID=${{ steps.cluster.outputs.run_id }}"
-          LAUNCH_CMD="$LAUNCH_CMD --retry-until-up -y"  # Retry until GPUs available, run attached
+          LAUNCH_CMD="$LAUNCH_CMD -y"  # No -d flag, run attached to stream logs
 
           echo "Command: $LAUNCH_CMD"
-          eval "$LAUNCH_CMD"
-          echo "status=SUCCEEDED" >> $GITHUB_OUTPUT
+
+          if eval "$LAUNCH_CMD"; then
+            echo "status=SUCCEEDED" >> $GITHUB_OUTPUT
+          else
+            echo "status=FAILED" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
       - name: Cleanup Cluster
         if: always()

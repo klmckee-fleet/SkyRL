@@ -73,6 +73,7 @@ class InferenceEngineClient(InferenceEngineInterface):
         prompt_token_ids = input_batch.get("prompt_token_ids")
         session_ids = input_batch.get("session_ids")
         sampling_params = input_batch.get("sampling_params")
+        multi_modal_data = input_batch.get("multi_modal_data")
 
         if (prompts is None and prompt_token_ids is None) or (prompts is not None and prompt_token_ids is not None):
             raise ValueError("Either `prompts` or `prompt_token_ids` must be provided, but not both.")
@@ -103,10 +104,12 @@ class InferenceEngineClient(InferenceEngineInterface):
             ((engine_idx, prompt_ids_list),) = engine_idx_to_prompt_ids.items()
             assert prompt_ids_list == [0], "Single prompt should map to index [0]"
             original_prompt_ids = prompt_token_ids[0]
+            mm_data = multi_modal_data[0] if multi_modal_data else None
             return await self._generate_single_with_retry(
                 engine_idx=engine_idx,
                 original_prompt_ids=original_prompt_ids,
                 sampling_params=sampling_params,
+                multi_modal_data=mm_data,
             )
 
         # For batched generate(), pause/continue cannot be supported.
@@ -119,9 +122,11 @@ class InferenceEngineClient(InferenceEngineInterface):
         for engine_idx, prompt_ids in engine_idx_to_prompt_ids.items():
             # index prompt_token_ids with prompt_ids
             cur_prompt_token_ids = [prompt_token_ids[i] for i in prompt_ids]
+            cur_mm_data = [multi_modal_data[i] for i in prompt_ids] if multi_modal_data else None
             engine_input = InferenceEngineInput(
                 prompt_token_ids=cur_prompt_token_ids,
                 sampling_params=sampling_params,
+                multi_modal_data=cur_mm_data,
             )
             tasks.append(asyncio.create_task(self.engines[engine_idx].generate(engine_input)))
             indices_list.append(prompt_ids)
@@ -154,7 +159,11 @@ class InferenceEngineClient(InferenceEngineInterface):
         )
 
     async def _generate_single_with_retry(
-        self, engine_idx: int, original_prompt_ids: List[int], sampling_params: Optional[Dict[str, Any]]
+        self,
+        engine_idx: int,
+        original_prompt_ids: List[int],
+        sampling_params: Optional[Dict[str, Any]],
+        multi_modal_data: Optional[Dict[str, Any]] = None,
     ) -> InferenceEngineOutput:
         """
         Generate a single response with retry mechanism.
@@ -215,6 +224,7 @@ class InferenceEngineClient(InferenceEngineInterface):
             engine_input = InferenceEngineInput(
                 prompt_token_ids=[new_prompt_ids],
                 sampling_params=cur_sampling_params,
+                multi_modal_data=[multi_modal_data] if multi_modal_data else None,
             )
 
             # 3.2. Send the request.

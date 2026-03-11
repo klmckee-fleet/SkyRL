@@ -876,3 +876,182 @@ class TestClearCaches:
         result = load_tasks_from_json(str(tasks_file))
         assert "new-test" in result
         assert "test" not in result
+
+
+class TestMultimodalObservations:
+    """Tests for multimodal observation creation in FleetTaskEnv."""
+
+    def setup_method(self):
+        """Clear cache before each test."""
+        clear_caches()
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_step_with_image_result_creates_multimodal_obs(self, mock_openenv_class, tmp_path):
+        """Test step() creates multimodal observation when tool result contains images."""
+        tasks_file = tmp_path / "tasks.json"
+        tasks_file.write_text(json.dumps([{"key": "task-1", "prompt": "Click button", "env_id": "test"}]))
+
+        mock_openenv_env = MagicMock()
+
+        async def mock_reset_async():
+            return {"prompt": "Click button", "tools": [{"name": "computer"}], "step": 0}
+
+        mock_openenv_env.reset_async = mock_reset_async
+
+        # Return multimodal result (text + image) from tool call
+        async def mock_step_async(action):
+            return (
+                {
+                    "observation": [
+                        {"type": "text", "text": "Screenshot captured"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                    ]
+                },
+                0.0,
+                False,
+                {},
+            )
+
+        mock_openenv_env.step_async = mock_step_async
+        mock_openenv_class.return_value = mock_openenv_env
+
+        env_config = DictConfig({"tasks_file": str(tasks_file)})
+        env = FleetTaskEnv(env_config, extras={"task_key": "task-1"})
+        env.init([])
+
+        # Step with tool call
+        action = '<tool_call>{"name": "computer", "arguments": {"action": "screenshot"}}</tool_call>'
+        result = env.step(action)
+
+        # Verify observation is multimodal
+        assert len(result.observations) == 1
+        obs = result.observations[0]
+        assert obs["role"] == "user"
+        assert isinstance(obs["content"], list)
+
+        # Check content parts
+        content = obs["content"]
+        assert len(content) == 2
+        assert content[0]["type"] == "text"
+        assert "Screenshot captured" in content[0]["text"]
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"] == "data:image/png;base64,abc123"
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_step_with_text_only_result_creates_text_obs(self, mock_openenv_class, tmp_path):
+        """Test step() creates text observation when tool result is text only."""
+        tasks_file = tmp_path / "tasks.json"
+        tasks_file.write_text(json.dumps([{"key": "task-1", "prompt": "Search", "env_id": "test"}]))
+
+        mock_openenv_env = MagicMock()
+
+        async def mock_reset_async():
+            return {"prompt": "Search", "tools": [{"name": "search"}], "step": 0}
+
+        mock_openenv_env.reset_async = mock_reset_async
+
+        # Return text-only result
+        async def mock_step_async(action):
+            return ({"observation": "Found 5 results"}, 0.0, False, {})
+
+        mock_openenv_env.step_async = mock_step_async
+        mock_openenv_class.return_value = mock_openenv_env
+
+        env_config = DictConfig({"tasks_file": str(tasks_file)})
+        env = FleetTaskEnv(env_config, extras={"task_key": "task-1"})
+        env.init([])
+
+        # Step with tool call
+        action = '<tool_call>{"name": "search", "arguments": {"q": "test"}}</tool_call>'
+        result = env.step(action)
+
+        # Verify observation is text-only
+        assert len(result.observations) == 1
+        obs = result.observations[0]
+        assert obs["role"] == "user"
+        assert isinstance(obs["content"], str)
+        assert "Found 5 results" in obs["content"]
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_step_with_dict_result_creates_json_obs(self, mock_openenv_class, tmp_path):
+        """Test step() creates JSON observation when tool result is dict."""
+        tasks_file = tmp_path / "tasks.json"
+        tasks_file.write_text(json.dumps([{"key": "task-1", "prompt": "Query", "env_id": "test"}]))
+
+        mock_openenv_env = MagicMock()
+
+        async def mock_reset_async():
+            return {"prompt": "Query", "tools": [{"name": "query"}], "step": 0}
+
+        mock_openenv_env.reset_async = mock_reset_async
+
+        # Return dict result
+        async def mock_step_async(action):
+            return ({"observation": {"status": "ok", "count": 42}}, 0.0, False, {})
+
+        mock_openenv_env.step_async = mock_step_async
+        mock_openenv_class.return_value = mock_openenv_env
+
+        env_config = DictConfig({"tasks_file": str(tasks_file)})
+        env = FleetTaskEnv(env_config, extras={"task_key": "task-1"})
+        env.init([])
+
+        # Step with tool call
+        action = '<tool_call>{"name": "query", "arguments": {}}</tool_call>'
+        result = env.step(action)
+
+        # Verify observation contains JSON
+        assert len(result.observations) == 1
+        obs = result.observations[0]
+        assert obs["role"] == "user"
+        assert isinstance(obs["content"], str)
+        assert '"status": "ok"' in obs["content"]
+        assert '"count": 42' in obs["content"]
+
+    @patch("integrations.fleet.env.OpenEnvFleetTaskEnv")
+    @patch.dict(os.environ, {"FLEET_API_KEY": "test-key"})
+    def test_step_with_image_only_result(self, mock_openenv_class, tmp_path):
+        """Test step() handles image-only result (no text)."""
+        tasks_file = tmp_path / "tasks.json"
+        tasks_file.write_text(json.dumps([{"key": "task-1", "prompt": "Screenshot", "env_id": "test"}]))
+
+        mock_openenv_env = MagicMock()
+
+        async def mock_reset_async():
+            return {"prompt": "Screenshot", "tools": [{"name": "computer"}], "step": 0}
+
+        mock_openenv_env.reset_async = mock_reset_async
+
+        # Return image-only result
+        async def mock_step_async(action):
+            return (
+                {
+                    "observation": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,xyz789"}},
+                    ]
+                },
+                0.0,
+                False,
+                {},
+            )
+
+        mock_openenv_env.step_async = mock_step_async
+        mock_openenv_class.return_value = mock_openenv_env
+
+        env_config = DictConfig({"tasks_file": str(tasks_file)})
+        env = FleetTaskEnv(env_config, extras={"task_key": "task-1"})
+        env.init([])
+
+        # Step with tool call
+        action = '<tool_call>{"name": "computer", "arguments": {"action": "screenshot"}}</tool_call>'
+        result = env.step(action)
+
+        # Verify observation is multimodal with just image
+        assert len(result.observations) == 1
+        obs = result.observations[0]
+        assert isinstance(obs["content"], list)
+        assert len(obs["content"]) == 1
+        assert obs["content"][0]["type"] == "image_url"

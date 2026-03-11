@@ -71,29 +71,6 @@ def load_tasks_from_json(tasks_file: str) -> Dict[str, Any]:
     return _TASK_CACHE[tasks_file]
 
 
-def _try_parse_json(raw: str) -> Optional[Dict[str, Any]]:
-    """Try to parse JSON, repairing missing trailing braces if needed."""
-    raw = raw.strip()
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            return parsed
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Repair: models often drop trailing closing braces on nested JSON.
-    # Try appending up to 3 closing braces.
-    for extra in range(1, 4):
-        try:
-            parsed = json.loads(raw + "}" * extra)
-            if isinstance(parsed, dict):
-                return parsed
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    return None
-
-
 def parse_tool_call(action: str) -> Optional[Dict[str, Any]]:
     """
     Parse tool call from LLM response.
@@ -116,14 +93,20 @@ def parse_tool_call(action: str) -> Optional[Dict[str, Any]]:
             # Match from opening tag to end of string or next special token
             match = re.search(rf"<{tag}>(.*?)(?:<\||\Z)", action, re.DOTALL)
         if match:
-            parsed = _try_parse_json(match.group(1))
-            if parsed is None:
-                continue
-            # Normalize keys
-            name = parsed.get("name") or parsed.get("tool")
-            args = parsed.get("arguments") or parsed.get("params", {})
-            if name:
-                return {"name": name, "arguments": args}
+            try:
+                parsed = json.loads(match.group(1).strip())
+                # json.loads can return any JSON type, we need a dict
+                if not isinstance(parsed, dict):
+                    continue
+                # Normalize keys
+                name = parsed.get("name") or parsed.get("tool")
+                args = parsed.get("arguments") or parsed.get("params", {})
+                if name:
+                    return {"name": name, "arguments": args}
+            except (json.JSONDecodeError, ValueError):
+                # ValueError catches Python's integer string conversion limit
+                # (e.g., model generates 8000+ digit numbers)
+                pass
 
     return None
 
@@ -193,9 +176,6 @@ class FleetTaskEnv(BaseTextEnv):
         # TTL for Fleet environment instances
         self.ttl_seconds = env_config.get("ttl_seconds", None)  # None = auto (CUA: 1800s, tool_use: 600s)
 
-        # Partial reward: use verifier accumulator counts instead of binary 0/1
-        self.partial_reward = env_config.get("partial_reward", False)
-
         # Environment state (initialized on init())
         self.openenv_task_env: Optional[OpenEnvFleetTaskEnv] = None
         self.chat_history: ConversationType = []
@@ -228,6 +208,81 @@ class FleetTaskEnv(BaseTextEnv):
 
         return config
 
+    def _adapt_computer_tool_for_qwen(self):
+        """Adapt the computer tool description for Qwen VL models.
+
+        Qwen3-VL/3.5 models output coordinates in a normalized [0, 1000] grid
+        regardless of actual screen resolution. This method:
+        1. Parses the actual screen dimensions from the tool description
+        2. Rewrites the description to use [0, 1000] coordinate range
+
+        Coordinates are converted back to pixels in step_async() before MCP execution.
+        Ref: https://github.com/QwenLM/Qwen3-VL/issues/1521
+        """
+        for tool in self.tools:
+            func = tool.get("function", {})
+            if func.get("name") != "computer":
+                continue
+
+            desc = func.get("description", "")
+
+            # Parse actual screen dimensions: "Screen resolution: 1366x768 pixels"
+            res_match = re.search(r"Screen resolution:\s*(\d+)x(\d+)", desc)
+            if res_match:
+                self.screen_width = int(res_match.group(1))
+                self.screen_height = int(res_match.group(2))
+            else:
+                self.screen_width = 1366
+                self.screen_height = 768
+
+            w, h = self.screen_width, self.screen_height
+
+            # Rewrite description for Qwen's [0, 1000] coordinate space
+            desc = re.sub(
+                r"Screen resolution:\s*\d+x\d+\s*pixels\s*(\([^)]*\))?",
+                "Screen resolution: 1000x1000",
+                desc,
+            )
+            desc = re.sub(
+                r"\(0, 0\) is top-left,\s*\(\d+, \d+\) is bottom-right",
+                "(0, 0) is top-left, (999, 999) is bottom-right",
+                desc,
+            )
+            desc = re.sub(
+                r"valid range: x=0-\d+, y=0-\d+",
+                "valid range: x=0-999, y=0-999",
+                desc,
+            )
+            desc = re.sub(
+                r"JPEG format at \d+x\d+",
+                "JPEG format at 1000x1000",
+                desc,
+            )
+            func["description"] = desc
+
+            logger.info(
+                f"Adapted computer tool for Qwen VL: actual_screen={w}x{h}, " f"model coordinate space=[0, 1000]"
+            )
+            break
+
+    def _convert_qwen_coordinates(self, tool_call: Dict[str, Any]):
+        """Convert Qwen's [0, 1000] normalized coordinates to pixel coordinates.
+
+        Modifies tool_call arguments in-place.
+        """
+        if not self.screen_width or not self.screen_height:
+            return
+        args = tool_call.get("arguments", {})
+        if not args or tool_call.get("name") != "computer":
+            return
+        for field in ("coordinate", "start_coordinate"):
+            coords = args.get(field)
+            if coords and isinstance(coords, (list, tuple)) and len(coords) == 2:
+                args[field] = [
+                    int(coords[0] / 1000 * self.screen_width),
+                    int(coords[1] / 1000 * self.screen_height),
+                ]
+
     async def init_async(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """
         Initialize the Fleet environment and return initial observation (async version).
@@ -248,7 +303,6 @@ class FleetTaskEnv(BaseTextEnv):
                 api_key=self.api_key,
                 ttl_seconds=self.ttl_seconds,
                 max_steps=self.max_turns,
-                partial_reward=self.partial_reward,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to create OpenEnv FleetTaskEnv: {e}") from e
@@ -267,6 +321,17 @@ class FleetTaskEnv(BaseTextEnv):
 
         # Get tools from observation (cached from __init__)
         self.tools = obs.get("tools", [])
+
+        # For computer_use: adapt coordinate system for Qwen VL models
+        # Qwen3-VL/3.5 output coordinates in normalized [0, 1000] space (pre-trained convention).
+        # The MCP server's computer tool expects pixel coordinates.
+        # We rewrite the tool description to [0, 1000] and convert back in step_async().
+        # Ref: https://github.com/QwenLM/Qwen3-VL/issues/1521
+        modality = self.task_config.get("task_modality", "tool_use")
+        self.screen_width = None
+        self.screen_height = None
+        if modality == "computer_use":
+            self._adapt_computer_tool_for_qwen()
 
         # Add context management tools if enabled
         if self.context_manager:
@@ -309,16 +374,41 @@ Before writing SQL queries, first explore the database schema:
 - List columns: SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'your_table'
 """
 
+        # Add computer_use-specific guidance
+        modality = self.task_config.get("task_modality", "tool_use")
+        computer_use_hints = ""
+        if modality == "computer_use":
+            computer_use_hints = """
+## Browser Interaction Strategy
+You are controlling a web browser via screenshots. Follow this loop:
+
+1. **Act**: Perform ONE action (click, type, scroll, etc.)
+2. **Observe**: Take a screenshot to see the result
+3. **Adapt**: If the screen hasn't changed, try a DIFFERENT action
+
+Key rules:
+- After clicking or typing, ALWAYS take a screenshot next to see what happened
+- NEVER repeat the same action more than twice. If it didn't work, try something different:
+  - Can't find an element by scrolling? Use the search bar or navigation menu instead
+  - Page not loading after a click? Try refreshing with key("F5") or clicking a different element
+  - Form not submitting? Check if required fields are missing
+- Use wait() only ONCE after a page navigation, then screenshot to check. Do not wait repeatedly
+- When the task is fully complete, say <done>. Do not keep clicking after finishing
+"""
+        tool_names = [t["function"]["name"] for t in self.tools if "function" in t]
+        tool_names_str = ", ".join(tool_names)
+
         system_content = f"""You are a helpful agent. Complete the task by calling tools.
 
 ## Current Date
 Today's date is {current_date}. When dates are mentioned without a year, assume the current year ({datetime.now().year}) or a future date.
-{env_context}{env_hints}
+{env_context}{env_hints}{computer_use_hints}
 ## Available Tools
 {tools_json}
 
 ## Tool Call Format
-<tool_call>{{"name": "tool_name", "arguments": {{"param": "value"}}}}</tool_call>
+Use the tools listed above by name ({tool_names_str}). Format each call as:
+<tool_call>{{"name": "<tool_name_from_above>", "arguments": {{...}}}}</tool_call>
 
 ## Error Handling
 If a tool call returns an error:
@@ -338,7 +428,21 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         # Build conversation with system prompt
         system_message = {"role": "system", "content": system_content}
-        user_message = {"role": "user", "content": task_prompt}
+
+        # For computer_use with initial screenshot, create multimodal user message
+        initial_screenshot = obs.get("initial_screenshot")
+        if initial_screenshot and isinstance(initial_screenshot, list):
+            # Build multimodal content: task prompt + screenshot
+            user_content = [{"type": "text", "text": task_prompt}]
+            # Add images from screenshot result
+            for item in initial_screenshot:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    user_content.append(item)
+            user_message = {"role": "user", "content": user_content}
+            logger.info(f"Task {self.task_key}: included initial screenshot in user message")
+        else:
+            user_message = {"role": "user", "content": task_prompt}
+
         self.chat_history = [system_message, user_message]
 
         metadata = {
@@ -374,11 +478,37 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
 
         max_turns_reached = self.turns >= self.max_turns
 
-        # Check if agent signals completion
-        agent_done = "<done>" in action.lower() or "[done]" in action.lower()
-
         # Parse tool call from LLM response
         tool_call = parse_tool_call(action)
+
+        # Convert Qwen's [0, 1000] normalized coordinates to pixel coordinates
+        if tool_call:
+            self._convert_qwen_coordinates(tool_call)
+
+        # Check if agent signals completion
+        has_done_signal = "<done>" in action.lower() or "[done]" in action.lower()
+
+        # Log the model output for debugging early termination
+        if self.turns == 1:
+            # Log full output for turn 1 to diagnose early termination
+            logger.info(
+                f"Task {self.task_key} turn 1 FULL OUTPUT:\n"
+                f"has_tool_call={tool_call is not None}\n"
+                f"has_done_signal={has_done_signal}\n"
+                f"agent_done={has_done_signal and not tool_call}\n"
+                f"action_length={len(action)}\n"
+                f"action='''{action[:500]}'''"
+            )
+
+        # If <done> is anywhere in the response, treat as episode complete.
+        # The model may wrap done inside a tool call (since </tool_call> is the
+        # only stop sequence), but the intent to terminate is still valid.
+        agent_done = has_done_signal
+
+        # Also catch {"action": "done"} wrapped in a computer tool call
+        if not agent_done and tool_call and tool_call.get("arguments", {}).get("action") == "done":
+            agent_done = True
+            tool_call = None  # Don't send to MCP
 
         tool_result = None
         error = None
@@ -474,22 +604,48 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             )
 
         # Build response observation
+        # For VL models, tool_result may contain images in OpenAI-compatible format:
+        # [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "data:..."}}]
         if error:
             self.tool_errors += 1
             obs_content = f"Error: {error}"
+            new_obs = {"role": "user", "content": obs_content}
         elif tool_result:
-            if isinstance(tool_result, dict):
+            # Check if tool_result contains images (list with image_url items)
+            if isinstance(tool_result, list) and any(
+                isinstance(item, dict) and item.get("type") == "image_url" for item in tool_result
+            ):
+                # Multimodal result - create OpenAI-compatible content array
+                content_parts = []
+                for item in tool_result:
+                    if isinstance(item, dict):
+                        if item.get("type") == "image_url":
+                            content_parts.append(item)
+                        elif item.get("type") == "text":
+                            content_parts.append({"type": "text", "text": f"Tool result:\n{item.get('text', '')}"})
+                        else:
+                            # Unknown type - convert to text
+                            content_parts.append(
+                                {"type": "text", "text": f"Tool result:\n{json.dumps(item, indent=2)}"}
+                            )
+                    else:
+                        content_parts.append({"type": "text", "text": f"Tool result:\n{str(item)}"})
+                new_obs = {"role": "user", "content": content_parts}
+            elif isinstance(tool_result, dict):
                 obs_content = f"Tool result:\n{json.dumps(tool_result, indent=2)}"
+                new_obs = {"role": "user", "content": obs_content}
             else:
                 obs_content = f"Tool result:\n{tool_result}"
+                new_obs = {"role": "user", "content": obs_content}
         elif agent_done:
             obs_content = "Task marked as complete."
+            new_obs = {"role": "user", "content": obs_content}
         elif not tool_call:
             obs_content = 'No tool call found. Use <tool_call>{"name": "...", "arguments": {...}}</tool_call> format.'
+            new_obs = {"role": "user", "content": obs_content}
         else:
             obs_content = "Action executed."
-
-        new_obs = {"role": "user", "content": obs_content}
+            new_obs = {"role": "user", "content": obs_content}
         self.chat_history.append(new_obs)
         if self.context_manager:
             self.context_manager.track_message(new_obs)
@@ -578,10 +734,13 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             env_key = m.get("env_key")
             if env_key:
                 if env_key not in env_data:
-                    env_data[env_key] = {"turns": [], "tool_calls": [], "tool_errors": []}
+                    env_data[env_key] = {"turns": [], "tool_calls": [], "tool_errors": [], "timing": []}
                 env_data[env_key]["turns"].append(m.get("turns", 0))
                 env_data[env_key]["tool_calls"].append(m.get("tool_calls", 0))
                 env_data[env_key]["tool_errors"].append(m.get("tool_errors", 0))
+                timing = {k: v for k, v in m.items() if k.startswith("timing/")}
+                if timing:
+                    env_data[env_key]["timing"].append(timing)
 
         result: Dict[str, Any] = {}
         total_turns = 0
@@ -620,6 +779,22 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             total_tool_calls += total_env_tool_calls
             total_tool_errors += total_env_tool_errors
             total_episodes += len(turns_list)
+
+        # Aggregate timing metrics across all envs
+        all_timing = []
+        for env_key, data in env_data.items():
+            timing_list = data.get("timing", [])
+            if timing_list:
+                all_timing.extend(timing_list)
+                for tkey in timing_list[0].keys():
+                    vals = [t[tkey] for t in timing_list if tkey in t]
+                    if vals:
+                        result[f"{env_key}/{tkey}"] = sum(vals) / len(vals)
+        if all_timing:
+            for tkey in all_timing[0].keys():
+                vals = [t[tkey] for t in all_timing if tkey in t]
+                if vals:
+                    result[tkey] = sum(vals) / len(vals)
 
         # Overall metrics
         result["avg_turns"] = total_turns / total_episodes if total_episodes > 0 else 0

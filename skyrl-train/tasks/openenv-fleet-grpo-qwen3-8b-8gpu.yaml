@@ -38,10 +38,6 @@ resources:
       cloud: primeintellect
     - accelerators: H200:8
       cloud: nebius
-    # GCP spot H200 fallback (preemptible, 64 GPU quota per region)
-    - accelerators: H200:8
-      cloud: gcp
-      use_spot: true
 
 num_nodes: 1
 
@@ -195,8 +191,8 @@ run: |
     trainer.use_hybrid_env_sampling=true \
     trainer.min_samples_per_env=1 \
     trainer.policy_mini_batch_size=64 \
-    trainer.micro_forward_batch_size_per_gpu=2 \
-    trainer.micro_train_batch_size_per_gpu=2 \
+    trainer.micro_forward_batch_size_per_gpu=4 \
+    trainer.micro_train_batch_size_per_gpu=4 \
     trainer.ckpt_interval=10 \
     trainer.max_prompt_length=2048 \
     generator.max_input_length=$MAX_INPUT_LENGTH \

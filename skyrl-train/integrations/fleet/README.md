@@ -94,7 +94,7 @@ environment:
     fleet_task:
       tasks_file: /path/to/tasks.json  # Exported from Fleet
       api_key: ${FLEET_API_KEY}        # Or set via environment
-      ttl_seconds: null                  # Auto: CUA=1800s, tool_use=600s (or override)
+      ttl_seconds: 600                  # Environment TTL
 ```
 
 ### Task JSON Format
@@ -121,6 +121,48 @@ environment:
 | `list_tools()` fails | RuntimeError raised, episode fails |
 | `_orch.reset()` fails | Warning logged, continues with empty observation |
 | `call_tool()` fails | Error returned in observation, episode continues |
+
+## Dataset Versions
+
+Datasets are stored in `s3://fleet-internal-datasets/{version}/openenv/`. Each version contains `all_tool_use.json` and `all_computer_use.json`.
+
+| Version | CU Tasks | TU Tasks | Notes |
+|---------|----------|----------|-------|
+| v3 | 20,557 | 20,557 | Original full dataset |
+| v4 | 15,193 | 15,193 | Filtered for quality |
+| v5 | 5,674 | 5,674 | Curated subset: outlook, zillow, rops-mail, fira, pagerduty, walmart, quickbooks, dmv, instacart, forums-homes, vanta, reddit, hubspot, sentry, dropbox, fos-operations, booking, ramp, fos-revops, budget, snyk |
+| v51 | 2,160 | 5,479 | Removes forums-homes from v5 CU |
+| v52 | 613 | 5,479 | CU: instacart, walmart, zillow only — easiest envs for small models |
+
+### CU Environment Breakdown
+
+```
+Version  Envs  Environments
+-------  ----  ------------
+v5       21    outlook, zillow, rops-mail, fira, pagerduty, walmart, quickbooks,
+               dmv, instacart, forums-homes, vanta, reddit, hubspot, sentry,
+               dropbox, fos-operations, booking, ramp, fos-revops, budget, snyk
+
+v51      20    Same as v5 minus forums-homes
+
+v52       3    instacart, walmart, zillow (easiest envs for small models)
+```
+
+Set via `DATA_VERSION` env var in task YAMLs or GHA workflow.
+
+## Changelog
+
+### 2026-03-10: Fix `<done>` signal detection + GRPO length bias
+
+**Problem 1 — `<done>` ignored when model also emits a tool call:**
+The model's only stop sequence is `</tool_call>`, so it can't end a turn with bare `<done>`. It outputs `<done>` mid-response but then continues generating until `</tool_call>`. The old logic (`agent_done = has_done_signal and not tool_call`) discarded the done signal whenever a tool call was present, so the episode never terminated. The model then looped calling `{"action": "done"}` (invalid MCP action) until max_turns.
+
+Fix: `agent_done = has_done_signal` — if `<done>` appears anywhere in the response, terminate regardless of tool calls. Also intercept `{"action": "done"}` in computer tool arguments as a fallback.
+
+**Problem 2 — GRPO per-token loss creates length bias:**
+`token_mean` loss reduction (default) averages gradients across all tokens. Shorter successful trajectories get more gradient per decision than longer ones. The model learned "short + done = good" as a surface pattern, leading to premature `done` hallucinations (0 at step 0 → 46 at step 30). Average turns dropped from 39 → 21.7 but task success plateaued.
+
+Fix: `trainer.algorithm.loss_reduction="sequence_mean"` — each trajectory contributes equally regardless of length.
 
 ## Dependencies
 

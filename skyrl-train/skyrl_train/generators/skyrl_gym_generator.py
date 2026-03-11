@@ -26,6 +26,10 @@ from skyrl_train.generators.utils import (
     get_generation_prompt_ids,
     apply_overlong_filtering,
     get_rollout_metrics,
+    is_multimodal_conversation,
+    extract_images_from_conversation,
+    try_load_processor,
+    apply_chat_template_with_images,
 )
 
 
@@ -46,6 +50,8 @@ class TrajectoryOutput:
     prompt_ids: List[int]
     rollout_logprobs: Optional[List[float]]
     env_metrics: Dict[str, Any]
+    # Multimodal data for VL models (images accumulated up to this point)
+    multi_modal_data: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -63,6 +69,8 @@ class AgentLoopState:
     rollout_logprobs: Optional[List[float]]
     response_end_idx: Optional[int]
     done: bool
+    # Accumulated images for VL models
+    accumulated_images: Optional[List[Any]] = None
 
 
 @dataclass
@@ -123,8 +131,13 @@ class SkyRLGymGenerator(GeneratorInterface):
         self.skyrl_gym_cfg = skyrl_gym_cfg
         self.inference_engine_client = inference_engine_client
         self.tokenizer = tokenizer
+        self.model_name = model_name
+        # Try to load processor for VL models (optional, falls back to tokenizer)
+        self.processor = try_load_processor(model_name)
+        self.is_vl_model = self.processor is not None
         self.max_turns = generator_cfg.max_turns
         self.trajectory_timeout_seconds = getattr(generator_cfg, "trajectory_timeout_seconds", 600)
+        self.batch_timeout_seconds = getattr(generator_cfg, "batch_timeout_seconds", 0)
         self.batched = generator_cfg.batched
         self.use_conversation_multi_turn = generator_cfg.use_conversation_multi_turn
         # optionally use custom chat template to get loss masks (i.e. for Qwen3)
@@ -182,6 +195,45 @@ class SkyRLGymGenerator(GeneratorInterface):
             if not self.use_conversation_multi_turn:
                 raise ValueError("`step_wise_trajectories` doesn't support `use_conversation_multi_turn=False`")
 
+    def _apply_chat_template(
+        self,
+        conversation: ConversationType,
+        add_generation_prompt: bool = True,
+        chat_template: Optional[str] = None,
+        **kwargs,
+    ) -> List[int]:
+        """Apply chat template handling both VL and text-only models.
+
+        For VL models (with processor), this handles multimodal messages correctly.
+        For text-only models, this uses the tokenizer directly.
+
+        Args:
+            conversation: List of message dicts.
+            add_generation_prompt: Whether to add generation prompt.
+            chat_template: Optional custom chat template.
+            **kwargs: Additional kwargs for apply_chat_template.
+
+        Returns:
+            List of token IDs.
+        """
+        if self.is_vl_model and is_multimodal_conversation(conversation):
+            return apply_chat_template_with_images(
+                self.processor,
+                conversation,
+                add_generation_prompt=add_generation_prompt,
+                chat_template=chat_template,
+                **kwargs,
+            )
+        else:
+            return self.tokenizer.apply_chat_template(
+                conversation,
+                add_generation_prompt=add_generation_prompt,
+                tokenize=True,
+                chat_template=chat_template,
+                return_dict=False,
+                **kwargs,
+            )
+
     async def _run_in_executor_if_available(self, func, *args, **kwargs):
         if (executor := self.env_executor) is not None:
             loop = asyncio.get_running_loop()
@@ -206,6 +258,27 @@ class SkyRLGymGenerator(GeneratorInterface):
         if hasattr(env, "close_async"):
             return await env.close_async()
         return await self._run_in_executor_if_available(env.close)
+
+    def _make_batch_timeout_output(
+        self,
+        prompt: ConversationType,
+        zero_reward: Union[float, list],
+        is_step_wise: bool,
+    ) -> Union[TrajectoryOutput, StepWiseOutput]:
+        """Create a zero-reward output for trajectories cancelled by batch timeout."""
+        prompt_ids = self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True, return_dict=False)
+        output = TrajectoryOutput(
+            response_ids=[self.tokenizer.eos_token_id],
+            reward=zero_reward,
+            stop_reason="batch_timeout",
+            loss_mask=[0],
+            prompt_ids=prompt_ids,
+            rollout_logprobs=[0.0],
+            env_metrics={"batch_timeout": 1.0},
+        )
+        if is_step_wise:
+            return StepWiseOutput(step_outputs=[output])
+        return output
 
     async def agent_loop(
         self,
@@ -273,11 +346,9 @@ class SkyRLGymGenerator(GeneratorInterface):
                 f"[env={env_key}] Environment init failed for session {session_id}: {e}. Returning zero-reward trajectory."
             )
             # Return a minimal failed trajectory with zero reward
-            prompt_ids = self.tokenizer.apply_chat_template(
+            prompt_ids = self._apply_chat_template(
                 chat_history,
                 add_generation_prompt=True,
-                tokenize=True,
-                return_dict=False,
                 **self.generator_cfg.chat_template_kwargs,
             )
             # Use token-level reward format [0.0] to match normal trajectories when custom_chat_template is None
@@ -297,14 +368,12 @@ class SkyRLGymGenerator(GeneratorInterface):
                 return StepWiseOutput(step_outputs=[init_fail_output])
             return init_fail_output
         initial_chat_history_length = len(chat_history)
-        initial_input_ids = self.tokenizer.apply_chat_template(
+        initial_input_ids = self._apply_chat_template(
             chat_history,
             # If retokenize_chat_history==True, avoid including the generation prompt in both the
             # prompt_ids and response_ids due to how `response_encodings["input_ids"]` works.
             add_generation_prompt=not retokenize_chat_history,
             chat_template=self.custom_chat_template if retokenize_chat_history else None,
-            tokenize=True,
-            return_dict=False,
             **self.generator_cfg.chat_template_kwargs,
         )
 
@@ -322,6 +391,19 @@ class SkyRLGymGenerator(GeneratorInterface):
         agent_loop_output = StepWiseOutput(step_outputs=[]) if is_step_wise else None
 
         get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
+
+        # Extract initial images from the prompt for VL models
+        initial_images = (
+            extract_images_from_conversation(chat_history) if is_multimodal_conversation(chat_history) else []
+        )
+
+        # Log VL model image extraction for debugging
+        if self.is_vl_model:
+            is_mm = is_multimodal_conversation(chat_history)
+            logger.info(
+                f"Session {session_id}: VL model, is_multimodal={is_mm}, " f"extracted_images={len(initial_images)}"
+            )
+
         agent_loop_state = AgentLoopState(
             chat_history=chat_history,
             input_ids=initial_input_ids,
@@ -329,10 +411,21 @@ class SkyRLGymGenerator(GeneratorInterface):
             rollout_logprobs=[] if get_logprobs else None,
             response_end_idx=None,
             done=False,
+            accumulated_images=initial_images if initial_images else None,
         )
 
         # Track trajectory start time for timeout
         trajectory_start_time = time.time()
+        # Per-turn timing accumulators
+        _total_generate_time = 0.0
+        _total_env_step_time = 0.0
+        _turn_count = 0
+
+        # Debug logging for prompt length issues
+        logger.debug(
+            f"Session {session_id}: initial_prompt_length={initial_prompt_length}, "
+            f"max_input_length={max_input_length}, input_ids_type={type(initial_input_ids)}"
+        )
 
         try:
             while not agent_loop_state.done:
@@ -362,18 +455,37 @@ class SkyRLGymGenerator(GeneratorInterface):
                         return early_timeout_output
 
                 if len(agent_loop_state.input_ids) > max_input_length:
+                    # If this happens before any turn, response_end_idx is None.
+                    # Return zero-reward trajectory instead of crashing in post-processing.
+                    if agent_loop_state.response_end_idx is None:
+                        logger.warning(
+                            f"Prompt exceeds max_input_length before first turn for session {session_id}: "
+                            f"{len(agent_loop_state.input_ids)} > {max_input_length}. Returning zero-reward trajectory."
+                        )
+                        await self._env_close(env)
+                        zero_reward = 0.0 if self.custom_chat_template else [0.0]
+                        prompt_too_long_output = TrajectoryOutput(
+                            response_ids=[self.tokenizer.eos_token_id],
+                            reward=zero_reward,
+                            stop_reason="prompt_too_long",
+                            loss_mask=[0],
+                            prompt_ids=initial_input_ids,
+                            rollout_logprobs=[0.0],
+                            env_metrics={"prompt_too_long": 1.0, "initial_prompt_length": float(initial_prompt_length)},
+                        )
+                        if is_step_wise:
+                            return StepWiseOutput(step_outputs=[prompt_too_long_output])
+                        return prompt_too_long_output
                     stop_reason = "length"
                     break
 
                 # 1. Generate output
                 if is_step_wise or retokenize_chat_history:
                     # re-apply whole chat template so length check is correct
-                    agent_loop_state.input_ids = self.tokenizer.apply_chat_template(
+                    agent_loop_state.input_ids = self._apply_chat_template(
                         chat_history,
                         chat_template=self.custom_chat_template if retokenize_chat_history else None,
                         add_generation_prompt=True,
-                        tokenize=True,
-                        return_dict=False,
                         **self.generator_cfg.chat_template_kwargs,
                     )
                     agent_loop_state.loss_mask = []
@@ -383,10 +495,16 @@ class SkyRLGymGenerator(GeneratorInterface):
                         stop_reason = "length"
                         break
 
+                # Build multimodal data for VL models if images are present
+                mm_data = None
+                if agent_loop_state.accumulated_images:
+                    mm_data = [{"image": agent_loop_state.accumulated_images}]
+
                 engine_input = InferenceEngineInput(
                     prompt_token_ids=[agent_loop_state.input_ids],
                     session_ids=[session_id],
                     sampling_params=sampling_params,
+                    multi_modal_data=mm_data,
                 )
                 try:
                     remaining = (
@@ -394,9 +512,11 @@ class SkyRLGymGenerator(GeneratorInterface):
                         if self.trajectory_timeout_seconds > 0
                         else None
                     )
+                    _gen_start = time.time()
                     engine_output = await asyncio.wait_for(
                         self.inference_engine_client.generate(engine_input), timeout=remaining
                     )
+                    _total_generate_time += time.time() - _gen_start
                 except asyncio.TimeoutError:
                     raise TrajectoryTimeoutError(
                         f"Timeout during generate after {time.time() - trajectory_start_time:.1f}s"
@@ -433,9 +553,12 @@ class SkyRLGymGenerator(GeneratorInterface):
                         if self.trajectory_timeout_seconds > 0
                         else None
                     )
+                    _env_start = time.time()
                     env_step_output: BaseTextEnvStepOutput = await asyncio.wait_for(
                         self._env_step(env, output), timeout=remaining
                     )
+                    _total_env_step_time += time.time() - _env_start
+                    _turn_count += 1
                 except asyncio.TimeoutError:
                     raise TrajectoryTimeoutError(
                         f"Timeout during env.step after {time.time() - trajectory_start_time:.1f}s"
@@ -443,6 +566,14 @@ class SkyRLGymGenerator(GeneratorInterface):
                 new_obs = env_step_output["observations"]
                 step_reward: float = env_step_output["reward"]
                 agent_loop_state.done = env_step_output["done"]
+
+                # Extract and accumulate images from observations for VL models
+                if new_obs and is_multimodal_conversation(new_obs):
+                    new_images = extract_images_from_conversation(new_obs)
+                    if new_images:
+                        if agent_loop_state.accumulated_images is None:
+                            agent_loop_state.accumulated_images = []
+                        agent_loop_state.accumulated_images.extend(new_images)
 
                 # Inject context status into observation if enabled
                 # This helps models learn when to use context management tools
@@ -489,6 +620,11 @@ class SkyRLGymGenerator(GeneratorInterface):
                     turn_loss_mask = turn_output.get_turn_loss_mask()
                     turn_response_logprobs: Optional[List[float]] = turn_output.get_turn_rollout_logprobs()
 
+                    # Capture multimodal data for this step (copy to avoid mutation)
+                    step_mm_data = None
+                    if agent_loop_state.accumulated_images:
+                        step_mm_data = {"image": list(agent_loop_state.accumulated_images)}
+
                     per_step_output = TrajectoryOutput(
                         response_ids=turn_response_ids,
                         reward=step_reward,
@@ -497,6 +633,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                         rollout_logprobs=turn_response_logprobs,
                         stop_reason=stop_reason,
                         env_metrics=env.get_metrics() if agent_loop_state.done else {},
+                        multi_modal_data=step_mm_data,
                     )
                     agent_loop_output.step_outputs.append(per_step_output)
 
@@ -546,6 +683,18 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         # Get environment-specific metrics after the episode is done
         env_metrics = env.get_metrics()
+        # Inject per-turn timing breakdown
+        _total_trajectory_time = time.time() - trajectory_start_time
+        env_metrics["timing/total_trajectory_secs"] = _total_trajectory_time
+        env_metrics["timing/total_generate_secs"] = _total_generate_time
+        env_metrics["timing/total_env_step_secs"] = _total_env_step_time
+        env_metrics["timing/num_turns"] = float(_turn_count)
+        if _turn_count > 0:
+            env_metrics["timing/avg_generate_per_turn_secs"] = _total_generate_time / _turn_count
+            env_metrics["timing/avg_env_step_per_turn_secs"] = _total_env_step_time / _turn_count
+            env_metrics["timing/pct_env_step"] = (
+                _total_env_step_time / _total_trajectory_time * 100 if _total_trajectory_time > 0 else 0
+            )
         # Close the environment
         await self._env_close(env)
 
@@ -629,6 +778,11 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             reward_out = self._build_per_token_rewards(per_step_rewards, response_ids, appended_eos_token)
 
+            # Include multimodal data for VL models
+            final_mm_data = None
+            if agent_loop_state.accumulated_images:
+                final_mm_data = {"image": agent_loop_state.accumulated_images}
+
             agent_loop_output = TrajectoryOutput(
                 response_ids=response_ids,
                 reward=reward_out,
@@ -637,6 +791,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                 prompt_ids=prompt_ids,
                 rollout_logprobs=rollout_logprobs,
                 env_metrics=env_metrics,
+                multi_modal_data=final_mm_data,
             )
 
         return agent_loop_output
@@ -810,12 +965,17 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Close the environment
             await self._env_close(env)
 
-        prompt_token_ids = self.tokenizer.apply_chat_template(
-            init_prompts,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=False,
-        )
+        # For batched mode, init_prompts is a list of prompts that could be multimodal
+        # We need to process each prompt individually for VL models
+        if self.is_vl_model and any(is_multimodal_conversation(p) for p in init_prompts):
+            prompt_token_ids = [self._apply_chat_template(p, add_generation_prompt=True) for p in init_prompts]
+        else:
+            prompt_token_ids = self.tokenizer.apply_chat_template(
+                init_prompts,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=False,
+            )
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 
         if self.generator_cfg.apply_overlong_filtering:
@@ -858,27 +1018,67 @@ class SkyRLGymGenerator(GeneratorInterface):
             return await self.generate_batched(prompts, env_classes, env_extras, max_tokens, sampling_params)
 
         # Async agent loop to generate trajectories in parallel.
-        tasks = []
+        async_tasks = []
         for i in range(len(prompts)):
-            tasks.append(
-                self.agent_loop(
-                    prompts[i],
-                    env_classes[i],
-                    env_extras[i],
-                    max_tokens,
-                    max_input_length,
-                    sampling_params=sampling_params,
-                    trajectory_id=trajectory_ids[i] if trajectory_ids is not None else None,
-                )
+            coro = self.agent_loop(
+                prompts[i],
+                env_classes[i],
+                env_extras[i],
+                max_tokens,
+                max_input_length,
+                sampling_params=sampling_params,
+                trajectory_id=trajectory_ids[i] if trajectory_ids is not None else None,
             )
+            async_tasks.append(asyncio.ensure_future(coro))
 
-        all_outputs = await tqdm.gather(
-            *tasks,
+        # Compute batch timeout: use configured value, or fall back to 2x per-trajectory timeout
+        batch_timeout = self.batch_timeout_seconds
+        if batch_timeout <= 0 and self.trajectory_timeout_seconds > 0:
+            batch_timeout = self.trajectory_timeout_seconds * 2
+        effective_timeout = batch_timeout if batch_timeout > 0 else None
+
+        # Map tasks to indices for order-preserving result collection
+        task_to_idx = {id(t): i for i, t in enumerate(async_tasks)}
+
+        # Progress bar
+        pbar = tqdm(
+            total=len(async_tasks),
             desc="Generating Trajectories",
-            miniters=max(1, len(tasks) // 10),
+            miniters=max(1, len(async_tasks) // 10),
             mininterval=5,
             disable=disable_tqdm,
         )
+        for t in async_tasks:
+            t.add_done_callback(lambda _: pbar.update(1))
+
+        done, pending = await asyncio.wait(async_tasks, timeout=effective_timeout)
+        pbar.close()
+
+        if pending:
+            logger.warning(
+                f"Batch timeout after {effective_timeout}s: {len(done)}/{len(async_tasks)} done, "
+                f"{len(pending)} pending. Cancelling stuck trajectories."
+            )
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Collect results in original order
+        is_step_wise = self.generator_cfg.step_wise_trajectories
+        zero_reward = 0.0 if self.custom_chat_template else [0.0]
+        all_outputs: list = [None] * len(async_tasks)
+
+        for t in done:
+            idx = task_to_idx[id(t)]
+            if t.exception() is not None:
+                logger.error(f"Trajectory {idx} raised exception: {t.exception()}")
+                all_outputs[idx] = self._make_batch_timeout_output(prompts[idx], zero_reward, is_step_wise)
+            else:
+                all_outputs[idx] = t.result()
+
+        for t in pending:
+            idx = task_to_idx[id(t)]
+            all_outputs[idx] = self._make_batch_timeout_output(prompts[idx], zero_reward, is_step_wise)
 
         if self.generator_cfg.step_wise_trajectories:
             responses = []
@@ -969,6 +1169,23 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Per-env timeout counts for WandB
             for env, count in timeouts_by_env.items():
                 rollout_metrics[f"environment/{env}/trajectory_timeouts"] = count
+
+        # Log count of batch timeouts by environment
+        batch_timeouts = sum(1 for sr in stop_reasons if sr == "batch_timeout")
+        if batch_timeouts > 0:
+            btimeouts_by_env: Dict[str, int] = {}
+            for env_class, stop_reason in zip(env_classes, stop_reasons):
+                if stop_reason == "batch_timeout":
+                    btimeouts_by_env[env_class] = btimeouts_by_env.get(env_class, 0) + 1
+
+            btimeout_details = ", ".join(f"{env}: {count}" for env, count in sorted(btimeouts_by_env.items()))
+            logger.warning(
+                f"Batch timeouts: {batch_timeouts}/{len(stop_reasons)} trajectories "
+                f"({100 * batch_timeouts / len(stop_reasons):.1f}%) - by env: {btimeout_details}"
+            )
+            rollout_metrics["generate/batch_timeouts"] = batch_timeouts
+            for env, count in btimeouts_by_env.items():
+                rollout_metrics[f"environment/{env}/batch_timeouts"] = count
 
         if self.generator_cfg.zero_reward_on_non_stop:
             # set reward to 0 if the stop reason is not "stop"

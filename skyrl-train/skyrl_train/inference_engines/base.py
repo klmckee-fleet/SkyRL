@@ -1,11 +1,40 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, TypedDict, Any, Optional, Hashable, TYPE_CHECKING
+from typing import List, Dict, TypedDict, Any, Optional, Hashable, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from skyrl_train.weight_sync.transfer_strategy import WeightSyncInitInfo
     from skyrl_train.weight_sync import WeightUpdateRequest
 
-MessageType = Dict[str, str]
+
+# --- Multimodal Message Types (OpenAI-compatible) ---
+# Text content item in a multimodal message
+class TextContent(TypedDict):
+    type: str  # "text"
+    text: str
+
+
+# Image content item in a multimodal message
+class ImageUrlContent(TypedDict):
+    url: str  # "data:image/png;base64,..." or URL
+
+
+class ImageContent(TypedDict):
+    type: str  # "image_url"
+    image_url: ImageUrlContent
+
+
+# Content can be a string (text-only, backward compatible) or list of content items (multimodal)
+ContentType = Union[str, List[Union[TextContent, ImageContent]]]
+
+
+# Message supports both text-only and multimodal content
+# Text-only: {"role": "user", "content": "Hello"}
+# Multimodal: {"role": "user", "content": [{"type": "text", "text": "..."}, {"type": "image_url", ...}]}
+class MessageType(TypedDict):
+    role: str
+    content: ContentType
+
+
 ConversationType = List[MessageType]
 
 
@@ -15,6 +44,9 @@ class InferenceEngineInput(TypedDict):
     prompt_token_ids: Optional[List[List[int]]]
     sampling_params: Optional[Dict[str, Any]]
     session_ids: Optional[List[Hashable]]
+    # Multimodal data for VL models. Each element corresponds to a prompt.
+    # Format: {"image": [PIL.Image, ...]} or {"image": ["base64_string", ...]}
+    multi_modal_data: Optional[List[Optional[Dict[str, Any]]]]
 
 
 class InferenceEngineOutput(TypedDict):
