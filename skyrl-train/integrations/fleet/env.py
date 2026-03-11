@@ -500,9 +500,15 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
                 f"action='''{action[:500]}'''"
             )
 
-        # Only consider <done> if there's NO tool call - if there's a tool call,
-        # we need to execute it and see the result before ending the episode
-        agent_done = has_done_signal and not tool_call
+        # If <done> is anywhere in the response, treat as episode complete.
+        # The model may wrap done inside a tool call (since </tool_call> is the
+        # only stop sequence), but the intent to terminate is still valid.
+        agent_done = has_done_signal
+
+        # Also catch {"action": "done"} wrapped in a computer tool call
+        if not agent_done and tool_call and tool_call.get("arguments", {}).get("action") == "done":
+            agent_done = True
+            tool_call = None  # Don't send to MCP
 
         tool_result = None
         error = None

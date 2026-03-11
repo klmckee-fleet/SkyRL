@@ -150,6 +150,20 @@ v52       3    instacart, walmart, zillow (easiest envs for small models)
 
 Set via `DATA_VERSION` env var in task YAMLs or GHA workflow.
 
+## Changelog
+
+### 2026-03-10: Fix `<done>` signal detection + GRPO length bias
+
+**Problem 1 — `<done>` ignored when model also emits a tool call:**
+The model's only stop sequence is `</tool_call>`, so it can't end a turn with bare `<done>`. It outputs `<done>` mid-response but then continues generating until `</tool_call>`. The old logic (`agent_done = has_done_signal and not tool_call`) discarded the done signal whenever a tool call was present, so the episode never terminated. The model then looped calling `{"action": "done"}` (invalid MCP action) until max_turns.
+
+Fix: `agent_done = has_done_signal` — if `<done>` appears anywhere in the response, terminate regardless of tool calls. Also intercept `{"action": "done"}` in computer tool arguments as a fallback.
+
+**Problem 2 — GRPO per-token loss creates length bias:**
+`token_mean` loss reduction (default) averages gradients across all tokens. Shorter successful trajectories get more gradient per decision than longer ones. The model learned "short + done = good" as a surface pattern, leading to premature `done` hallucinations (0 at step 0 → 46 at step 30). Average turns dropped from 39 → 21.7 but task success plateaued.
+
+Fix: `trainer.algorithm.loss_reduction="sequence_mean"` — each trajectory contributes equally regardless of length.
+
 ## Dependencies
 
 - **OpenEnv**: `pip install openenv[fleet]` or add to PYTHONPATH
