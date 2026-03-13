@@ -137,7 +137,9 @@ setup: |
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   uv pip install wandb boto3 awscli
 
-  uv pip install "litellm>=1.75.5" "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet_client" fleet-python logfire "mcp>=1.0.0"
+  uv pip install "litellm>=1.75.5" fleet-python logfire "mcp>=1.0.0"
+  # OpenEnv: force reinstall to pick up latest changes (version number doesn't always bump)
+  uv pip install --force-reinstall --no-cache-dir --no-deps "git+https://github.com/fleet-ai/OpenEnv.git@deniz/fleet_client"
 
   mkdir -p /workspace/data/fleet
   TASKS_FILE="/workspace/data/fleet/tasks_${MODALITY}.json"
