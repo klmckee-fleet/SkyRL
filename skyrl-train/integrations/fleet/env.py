@@ -176,6 +176,9 @@ class FleetTaskEnv(BaseTextEnv):
         # TTL for Fleet environment instances
         self.ttl_seconds = env_config.get("ttl_seconds", None)  # None = auto (CUA: 1800s, tool_use: 600s)
 
+        # Partial reward: use fractional scores from verifier accumulators instead of binary 0/1
+        self.partial_reward = env_config.get("partial_reward", False)
+
         # Environment state (initialized on init())
         self.openenv_task_env: Optional[OpenEnvFleetTaskEnv] = None
         self.chat_history: ConversationType = []
@@ -303,6 +306,7 @@ class FleetTaskEnv(BaseTextEnv):
                 api_key=self.api_key,
                 ttl_seconds=self.ttl_seconds,
                 max_steps=self.max_turns,
+                partial_reward=self.partial_reward,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to create OpenEnv FleetTaskEnv: {e}") from e
