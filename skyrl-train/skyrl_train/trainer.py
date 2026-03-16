@@ -251,9 +251,12 @@ class RayPPOTrainer:
                         generator_output: GeneratorOutput = await self.generate(generator_input)
 
                     if self.cfg.generator.step_wise_trajectories:
-                        # NOTE: We use instance_ids from `trajectory_ids` here instead of re-using `uids`
-                        # this is because in step-wise training, len(uids) != len(generator_output["response_ids"])
+                        # Step-wise training expands per-step; re-derive uids from output trajectory_ids
                         uids = [trajectory_id.instance_id for trajectory_id in generator_output["trajectory_ids"]]
+                    elif len(generator_output["response_ids"]) != len(uids):
+                        # Hint augmentation may add extra rollouts; re-derive uids from input trajectory_ids
+                        # (generator mutates input_batch["trajectory_ids"] in-place when appending hints)
+                        uids = [tid.instance_id for tid in generator_input["trajectory_ids"]]
 
                     # dynamic sampling
                     if self.cfg.trainer.algorithm.dynamic_sampling.type is not None:
