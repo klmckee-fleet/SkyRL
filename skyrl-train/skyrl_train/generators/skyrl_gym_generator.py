@@ -1070,7 +1070,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 
         # Log hint augmentation metrics
-        hinted_metrics = [m for m in env_metrics if m.get("is_hinted")]
+        hinted_metrics = [m for m in env_metrics if isinstance(m, dict) and m.get("is_hinted")]
         if hinted_metrics:
             n_hinted = len(hinted_metrics)
             hinted_rewards = []
