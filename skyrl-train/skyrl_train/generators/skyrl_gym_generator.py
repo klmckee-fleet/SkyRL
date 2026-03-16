@@ -1010,8 +1010,9 @@ class SkyRLGymGenerator(GeneratorInterface):
             )
             if hint_outputs:
                 all_outputs = list(all_outputs) + hint_outputs
-                trajectory_ids = list(trajectory_ids) + hint_tids
-                env_classes = list(env_classes) + hint_env_classes
+                # Extend in-place so input_batch references are updated (trainer reads these)
+                trajectory_ids.extend(hint_tids)
+                env_classes.extend(hint_env_classes)
                 # Also extend prompts and env_extras arrays to stay aligned
                 for tid in hint_tids:
                     # Find original prompt index for this instance_id
@@ -1051,7 +1052,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             prompt_token_ids = [output.prompt_ids for output in all_outputs]
             env_metrics = [output.env_metrics for output in all_outputs]
             is_last_step = None
-            out_trajectory_ids = None
+            out_trajectory_ids = trajectory_ids
 
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
