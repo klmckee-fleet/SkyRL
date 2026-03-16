@@ -873,6 +873,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         hint_tasks = []
         hint_tids = []
         hint_envs = []
+        orig_prompt_ids = []  # unhinted prompt_ids for RLTF-SD
         prompts_hinted = 0
 
         for iid, items in groups.items():
@@ -922,6 +923,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                 )
                 hint_tids.append(tid)
                 hint_envs.append(env_classes[best_orig_idx])
+                orig_prompt_ids.append(best_output.prompt_ids)
 
         # 3. Run all hinted rollouts in parallel
         if hint_tasks:
@@ -935,7 +937,19 @@ class SkyRLGymGenerator(GeneratorInterface):
                 miniters=1,
                 mininterval=5,
             )
-            return list(hint_outputs), hint_tids, hint_envs
+            # RLTF-SD: strip hint from training prompt. Replace hinted prompt_ids
+            # with the original unhinted prompt_ids so the model learns to produce
+            # hint-quality outputs conditioned on the original prompt alone:
+            # ∇θ log π(y_hint | x_0) instead of ∇θ log π(y_hint | x_0 + hint)
+            hint_outputs = list(hint_outputs)
+            for i, output in enumerate(hint_outputs):
+                hinted_len = len(output.prompt_ids)
+                output.prompt_ids = orig_prompt_ids[i]
+                logger.debug(
+                    f"RLTF-SD: replaced hinted prompt ({hinted_len} tokens) "
+                    f"with original prompt ({len(output.prompt_ids)} tokens)"
+                )
+            return hint_outputs, hint_tids, hint_envs
 
         return [], [], []
 
