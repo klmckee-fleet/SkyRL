@@ -324,7 +324,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
         agent_loop_state = AgentLoopState(
             chat_history=chat_history,
-            input_ids=initial_input_ids,
+            input_ids=list(initial_input_ids),
             loss_mask=[],
             rollout_logprobs=[] if get_logprobs else None,
             response_end_idx=None,
