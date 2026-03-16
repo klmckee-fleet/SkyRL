@@ -882,7 +882,7 @@ class SkyRLGymGenerator(GeneratorInterface):
                 rewards.append(r if isinstance(r, (int, float)) else sum(r))
             max_reward = max(rewards)
 
-            if max_reward >= hint_cfg.hint_reward_threshold:
+            if max_reward > hint_cfg.hint_reward_threshold:
                 continue  # at least one raw sample has signal
 
             # Find best raw rollout (highest partial reward) for feedback
