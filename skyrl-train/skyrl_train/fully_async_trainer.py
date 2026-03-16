@@ -20,7 +20,7 @@ from loguru import logger
 from skyrl_train.trainer import RayPPOTrainer
 from tqdm import tqdm
 from skyrl_train.utils import Timer
-from skyrl_train.utils.ppo_utils import normalize_advantages_dict
+from skyrl_train.utils.ppo_utils import normalize_advantages_by_task, normalize_advantages_dict
 from skyrl_train.training_batch import TrainingInputBatch
 from skyrl_train.generators.base import GeneratorOutput
 from skyrl_train.utils.trainer_utils import ResumeMode, build_dataloader
@@ -523,6 +523,9 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
             if self.cfg.trainer.algorithm.advantage_batch_normalize:
                 training_input = normalize_advantages_dict(training_input)
 
+            if self.cfg.trainer.algorithm.task_advantage_normalize:
+                training_input = normalize_advantages_by_task(training_input)
+
         if self.cfg.trainer.dump_data_batch:
             # dump data to file
             with Timer("dump_data_batch"):
@@ -661,7 +664,7 @@ class FullyAsyncRayPPOTrainer(RayPPOTrainer):
         vis = self.tokenizer.decode(generator_output["response_ids"][0])
         logger.info(f"Example generated: {vis}")
 
-        return self.convert_to_training_input(generator_output, uids)
+        return self.convert_to_training_input(generator_output, uids, data_sources)
 
     def save_checkpoints(self):
         """

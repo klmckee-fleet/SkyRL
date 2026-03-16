@@ -109,6 +109,8 @@ trainer:
     entropy_loss_coef: 0.01
     # this adds training batch level normalization to advantages
     advantage_batch_normalize: false
+    # per-task advantage normalization (AgentRL, arxiv 2510.04206)
+    task_advantage_normalize: false
     value_head_prefix: "value_head"
     policy_loss_type: "regular" # "regular", "dual_clip", "gspo", "clip_cov", "kl_cov", or customizable with PolicyLossRegistry
     loss_reduction: "token_mean" # "token_mean", "sequence_mean", "seq_mean_token_sum_norm"

@@ -54,6 +54,7 @@ from skyrl_train.utils.ppo_utils import (
     compute_approx_kl,
     get_kl_controller,
     masked_mean,
+    normalize_advantages_by_task,
     normalize_advantages_dict,
 )
 from skyrl_train.utils.tracking import Tracking
@@ -286,7 +287,9 @@ class RayPPOTrainer:
                     )
 
                     with Timer("convert_to_training_input", self.all_timings):
-                        training_input: TrainingInputBatch = self.convert_to_training_input(generator_output, uids)
+                        training_input: TrainingInputBatch = self.convert_to_training_input(
+                            generator_output, uids, data_sources
+                        )
                         logger.info(f"Number of sequences: {len(training_input['sequences'])}")
 
                     # 1.4 inference and calculate values, log probs, rewards, kl divergence
@@ -308,6 +311,9 @@ class RayPPOTrainer:
 
                         if self.cfg.trainer.algorithm.advantage_batch_normalize:
                             training_input = normalize_advantages_dict(training_input)
+
+                        if self.cfg.trainer.algorithm.task_advantage_normalize:
+                            training_input = normalize_advantages_by_task(training_input)
 
                     if self.cfg.trainer.dump_data_batch:
                         # dump data to file
@@ -617,7 +623,9 @@ class RayPPOTrainer:
         )
         logger.info("Initialized weight sync state for policy model and inference engines.")
 
-    def convert_to_training_input(self, generator_output: GeneratorOutput, uids: List[str]) -> TrainingInputBatch:
+    def convert_to_training_input(
+        self, generator_output: GeneratorOutput, uids: List[str], data_sources: Optional[List[str]] = None
+    ) -> TrainingInputBatch:
         """Converts lists to a padded batch of tensors for training"""
         prompt_ids: List[List[int]] = generator_output["prompt_token_ids"]
         response_ids: List[List[int]] = generator_output["response_ids"]
@@ -662,7 +670,7 @@ class RayPPOTrainer:
                 ),
             },
         )
-        training_input.metadata = {"uids": uids}
+        training_input.metadata = {"uids": uids, "data_sources": data_sources}
         # padded response length
         training_input.metadata["response_length"] = response_masks_tensor.shape[1]
         if self.cfg.generator.step_wise_trajectories:

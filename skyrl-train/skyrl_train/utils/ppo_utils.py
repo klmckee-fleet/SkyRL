@@ -148,6 +148,47 @@ def normalize_advantages_dict(data: TrainingInputBatch) -> TrainingInputBatch:
     return data
 
 
+@torch.no_grad()
+def normalize_advantages_by_task(data: TrainingInputBatch) -> TrainingInputBatch:
+    """Per-task advantage normalization (AgentRL, arxiv 2510.04206).
+
+    Z-score normalizes advantages within each task group (data_source),
+    so all tasks contribute equally to the gradient regardless of
+    data proportion or reward scale.
+    """
+    advantages = data["advantages"]
+    response_masks = data["response_mask"]
+    data_sources = data.metadata.get("data_sources")
+
+    if data_sources is None:
+        logger.warning("data_sources not found in metadata, skipping task normalization")
+        return data
+
+    # Group indices by data_source
+    groups: dict[str, list[int]] = {}
+    for i, ds in enumerate(data_sources):
+        groups.setdefault(ds, []).append(i)
+
+    for ds, indices in groups.items():
+        idx = torch.tensor(indices, device=advantages.device)
+        group_adv = advantages[idx]
+        group_mask = response_masks[idx]
+
+        # Compute mean/std over masked tokens in this group
+        masked_adv = group_adv * group_mask
+        num_tokens = group_mask.sum()
+        if num_tokens == 0:
+            continue
+        mean = masked_adv.sum() / num_tokens
+        var = ((group_adv - mean).pow(2) * group_mask).sum() / num_tokens
+        std = var.clamp(min=1e-8).sqrt()
+
+        advantages[idx] = (group_adv - mean) / std
+
+    data["advantages"] = advantages
+    return data
+
+
 def masked_var(values, mask, unbiased=True):
     """Compute variance of tensor with masked values."""
     mean = masked_mean(values, mask)
