@@ -987,11 +987,13 @@ class SkyRLGymGenerator(GeneratorInterface):
         )
 
         # --- Hint augmentation: rescue GRPO signal on dead prompts ---
+        # Only during training (sampling_params is None); eval passes explicit params.
         hint_cfg = self.skyrl_gym_cfg.get("fleet_task", DictConfig({}))
         if (
             hint_cfg.get("enable_hints", False)
             and not self.generator_cfg.step_wise_trajectories
             and trajectory_ids is not None
+            and sampling_params is None
         ):
             hint_outputs, hint_tids, hint_env_classes = await self._run_hint_augmentation(
                 all_outputs=list(all_outputs),
