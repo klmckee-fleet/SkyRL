@@ -72,6 +72,7 @@ setup: |
 run: |
   bash skyrl-train/scripts/fleet-common-run.sh \
     --cuda-env "$HOME/.cuda_env" \
+    --no-pytorch-alloc-conf \
     --nccl-heartbeat 1800 -- \
     environment.skyrl_gym.fleet_task.ttl_seconds=900 \
     trainer.algorithm.advantage_estimator=grpo \
