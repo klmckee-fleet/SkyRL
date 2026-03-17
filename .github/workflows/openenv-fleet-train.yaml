@@ -82,6 +82,11 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
     steps:
+      - name: Clean runner state
+        run: |
+          rm -rf ~/actions-runner/_diag/pages/* 2>/dev/null || true
+          rm -rf ~/actions-runner/_work/_temp/* 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
