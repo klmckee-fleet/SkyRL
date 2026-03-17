@@ -900,6 +900,11 @@ class SkyRLGymGenerator(GeneratorInterface):
             if not hint_text:
                 continue
 
+            logger.info(
+                f"Hint for instance {iid} (best_reward={rewards[best_idx]:.3f}, "
+                f"verifier_stdout={bool(metrics.get('verifier_stdout'))}, "
+                f"verifier_error={bool(metrics.get('verifier_error'))}):\n{hint_text}"
+            )
             prompts_hinted += 1
 
             # Create hinted agent_loop tasks (new env instances)
