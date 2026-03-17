@@ -193,6 +193,7 @@ jobs:
           [ -n "${{ inputs.resume_run_name }}" ] && LAUNCH_CMD="$LAUNCH_CMD --env RESUME_RUN_NAME=${{ inputs.resume_run_name }}"
           LAUNCH_CMD="$LAUNCH_CMD --env RUN_ID=${{ steps.cluster.outputs.run_id }}"
           [ "${{ inputs.num_nodes }}" != "1" ] && LAUNCH_CMD="$LAUNCH_CMD --num-nodes ${{ inputs.num_nodes }}"
+          [ "${{ inputs.cloud }}" != "any" ] && LAUNCH_CMD="$LAUNCH_CMD --cloud ${{ inputs.cloud }}"
           LAUNCH_CMD="$LAUNCH_CMD --retry-until-up -y"  # Retry until GPUs available, run attached
 
           echo "Command: $LAUNCH_CMD"
