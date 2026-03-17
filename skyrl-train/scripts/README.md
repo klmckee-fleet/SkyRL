@@ -42,7 +42,7 @@ No changes needed in the run block — multi-node works automatically.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--openenv-branch BRANCH` | `deniz/fleet-logfire` | OpenEnv git ref to install |
+| `--openenv-branch BRANCH` | `deniz/fleet_client` | OpenEnv git ref to install |
 | `--extra-setup SCRIPT` | *(none)* | Script to source after `uv sync` (model-specific deps) |
 | `--data-root DIR` | `$HOME` | Root for dataset download (`DIR/data/fleet/`) |
 | `--skip-uv-isolated` | `false` | Flag for configs that use `python` directly |
