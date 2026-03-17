@@ -27,15 +27,15 @@ if [ -z "$CUDA_HOME" ] && command -v nvcc &>/dev/null; then
 fi
 if [ -z "$CUDA_HOME" ]; then
   echo "nvcc not found on system. Installing CUDA toolkit from NVIDIA apt repo..."
-  apt-get update -qq
+  sudo apt-get update -qq
   UBUNTU_VER=$(lsb_release -rs 2>/dev/null | tr -d '.' || echo "2204")
   KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VER}/x86_64/cuda-keyring_1.1-1_all.deb"
   echo "Installing CUDA keyring from $KEYRING_URL"
   wget -qO /tmp/cuda-keyring.deb "$KEYRING_URL" 2>&1 || curl -sLo /tmp/cuda-keyring.deb "$KEYRING_URL"
   file /tmp/cuda-keyring.deb
-  dpkg -i /tmp/cuda-keyring.deb
-  apt-get update -qq
-  apt-get install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 cuda-nvrtc-dev-12-8
+  sudo dpkg -i /tmp/cuda-keyring.deb
+  sudo apt-get update -qq
+  sudo apt-get install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 cuda-nvrtc-dev-12-8
   CUDA_HOME="/usr/local/cuda-12.8"
 fi
 export CUDA_HOME

@@ -57,7 +57,7 @@ done
 # --- System dependencies (GCP images may lack build tools) ---
 if ! command -v c++ &>/dev/null; then
   echo "Installing build-essential (c++ compiler required for causal-conv1d)..."
-  apt-get update -qq && apt-get install -y --no-install-recommends build-essential
+  sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends build-essential
 fi
 
 # --- Python environment ---
