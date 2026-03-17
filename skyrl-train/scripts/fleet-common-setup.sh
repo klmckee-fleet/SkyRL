@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # Defaults
-OPENENV_BRANCH="deniz/fleet-logfire"
+OPENENV_BRANCH="deniz/fleet_client"
 EXTRA_SETUP=""
 DATA_ROOT="$HOME"
 SKIP_UV_ISOLATED=false
