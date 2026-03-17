@@ -29,6 +29,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Resolve extra-setup path to absolute before cd (it's relative to repo root)
+if [ -n "$EXTRA_SETUP" ]; then
+  EXTRA_SETUP="$(cd "$(dirname "$EXTRA_SETUP")" && pwd)/$(basename "$EXTRA_SETUP")"
+fi
+
 cd skyrl-train
 
 echo "=== Fleet Common Setup ==="
