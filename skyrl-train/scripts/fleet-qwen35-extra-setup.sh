@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Qwen3.5-specific dependencies (sourced by fleet-common-setup.sh via --extra-setup)
 #
-# Installs: transformers nightly, flash-attn 2.8.3 wheel, CUDA toolkit (nvcc)
+# Installs: flash-attn 2.8.3 wheel, CUDA toolkit (nvcc)
 # Writes: $HOME/.cuda_env (sourced at run time for FlashInfer JIT)
-
-# transformers from source: Qwen3.5 model type not in stable release yet
-uv pip install -U "transformers @ git+https://github.com/huggingface/transformers.git"
+#
+# NOTE: Do NOT install transformers from git main — the main branch renamed
+# layer_type_validation to validate_layer_type(), breaking vLLM 0.17.0's
+# qwen3_5_moe config. The locked version (4.57.3) has both Qwen3.5 support
+# and the API vLLM expects.
 
 # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12 (training forward/backward)
 uv pip install "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
