@@ -54,6 +54,12 @@ for f in .venv/bin/ray .venv/lib/python*/site-packages/ray/core/src/ray/raylet/r
   [ -f "$f" ] && chmod +x "$f" 2>/dev/null || true
 done
 
+# --- System dependencies (GCP images may lack build tools) ---
+if ! command -v c++ &>/dev/null; then
+  echo "Installing build-essential (c++ compiler required for causal-conv1d)..."
+  apt-get update -qq && apt-get install -y --no-install-recommends build-essential
+fi
+
 # --- Python environment ---
 uv venv --python 3.12 --seed
 source .venv/bin/activate
