@@ -85,27 +85,10 @@ export TMPDIR="$TMP_DIR"
 TASKS_FILE="${DATA_ROOT}/data/fleet/tasks_${MODALITY}.json"
 DATA_DIR="${DATA_ROOT}/data/fleet/${MODALITY}"
 
-# --- System diagnostics (helps debug GCP-specific FSDP crashes) ---
+# --- System diagnostics ---
 echo "=== System Diagnostics ==="
-echo "--- Memory ---"
 free -h
-echo "--- Cgroup memory limits ---"
-cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo "no cgroup memory limit found"
-cat /sys/fs/cgroup/memory.current 2>/dev/null || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || echo "no cgroup memory usage found"
-echo "--- VM overcommit ---"
-cat /proc/sys/vm/overcommit_memory 2>/dev/null || true
-cat /proc/sys/vm/overcommit_ratio 2>/dev/null || true
-echo "--- GPU info ---"
-nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv 2>/dev/null || true
-echo "--- NVIDIA Fabric Manager (required for NVSwitch on H200/B200) ---"
-systemctl status nvidia-fabricmanager 2>/dev/null | head -5 || echo "nvidia-fabricmanager service not found"
-echo "--- GPU Topology ---"
-nvidia-smi topo -m 2>/dev/null || echo "nvidia-smi topo not available"
-echo "--- NVIDIA driver + CUDA ---"
-nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true
-nvcc --version 2>/dev/null | tail -1 || true
-echo "--- Process count ---"
-ps aux | wc -l
+nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv 2>/dev/null || true
 echo "=== End Diagnostics ==="
 
 # --- wandb login ---
@@ -114,12 +97,14 @@ python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
 # --- Ray cluster setup (multi-node aware) ---
 export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
 export RAY_object_store_memory=10000000000
-# Disable Ray's memory monitor to prevent it from killing workers
-# (suspected root cause of FSDP worker SIGKILL on GCP)
+# Disable Ray's memory monitor to prevent spurious worker kills
 export RAY_DISABLE_MEMORY_MONITOR=1
+# Disable NCCL NVLS (NVLink SHARP) — causes SIGKILL on H200/B200 when
+# Fabric Manager isn't properly reset after VM creation on GCP.
+# See: https://github.com/NVIDIA/nccl/issues/1562
+export NCCL_NVLS_ENABLE=0
 # NCCL debug logging for distributed communication issues
-export NCCL_DEBUG=INFO
-export NCCL_DEBUG_SUBSYS=INIT,NET
+export NCCL_DEBUG=WARN
 
 read -r head_ip _ <<< "$SKYPILOT_NODE_IPS"
 
@@ -183,21 +168,12 @@ if [ "${SKYPILOT_NODE_RANK:-0}" = "0" ]; then
   EXIT_CODE=$?
   set -e
 
-  # Always dump post-training diagnostics (Hydra may exit 0 even when workers crash)
-  echo "=== Post-Training Diagnostics (exit code: $EXIT_CODE) ==="
-  echo "--- dmesg (last 80 lines) ---"
-  sudo dmesg -T 2>/dev/null | tail -80 || dmesg 2>/dev/null | tail -80 || echo "dmesg not available"
-  echo "--- dmesg OOM/kill/segfault matches ---"
-  sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|out of memory|segfault|sigsegv|general protection|traps:" | tail -30 || echo "(none found)"
-  echo "--- Memory ---"
-  free -h
-  echo "--- Cgroup memory ---"
-  cat /sys/fs/cgroup/memory.current 2>/dev/null || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || true
-  echo "--- GPU memory ---"
-  nvidia-smi --query-gpu=memory.used,memory.free --format=csv 2>/dev/null || true
-  echo "=== End Post-Training Diagnostics ==="
-
   if [ $EXIT_CODE -ne 0 ]; then
+    echo "=== Training failed (exit code $EXIT_CODE) ==="
+    echo "--- dmesg (OOM/segfault) ---"
+    sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|out of memory|segfault|sigsegv|general protection" | tail -20 || true
+    free -h
+    nvidia-smi --query-gpu=memory.used,memory.free --format=csv 2>/dev/null || true
     exit $EXIT_CODE
   fi
 

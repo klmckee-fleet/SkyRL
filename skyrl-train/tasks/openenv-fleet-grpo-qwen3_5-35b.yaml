@@ -70,6 +70,10 @@ setup: |
     --extra-setup skyrl-train/scripts/fleet-qwen35-extra-setup.sh
 
 run: |
+  # NCCL NVLS fix: disable NVLink SHARP to prevent FSDP worker SIGKILL on GCP
+  # See: https://github.com/NVIDIA/nccl/issues/1562
+  export NCCL_NVLS_ENABLE=0
+
   bash skyrl-train/scripts/fleet-common-run.sh \
     --use-python-direct --cuda-env "$HOME/.cuda_env" \
     --set-ulimit --no-pytorch-alloc-conf \
