@@ -44,7 +44,7 @@ num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: main
+  ref: debug/fsdp-gcp-crash
 
 envs:
   WANDB_API_KEY: ""
