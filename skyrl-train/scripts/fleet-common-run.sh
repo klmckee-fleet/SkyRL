@@ -89,6 +89,19 @@ DATA_DIR="${DATA_ROOT}/data/fleet/${MODALITY}"
 echo "=== System Diagnostics ==="
 free -h
 nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv 2>/dev/null || true
+echo "--- /dev/shm ---"
+df -h /dev/shm 2>/dev/null || echo "/dev/shm not mounted"
+ls -la /dev/shm/ 2>/dev/null | head -5 || true
+echo "--- GPU Topology ---"
+nvidia-smi topo -m 2>/dev/null || true
+echo "--- cgroup memory limits ---"
+cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo "No cgroup memory limit found"
+echo "--- ulimits ---"
+ulimit -a 2>/dev/null || true
+echo "--- NCCL env vars ---"
+env | grep -i NCCL || echo "No NCCL env vars set"
+echo "--- kernel overcommit ---"
+cat /proc/sys/vm/overcommit_memory 2>/dev/null || true
 echo "=== End Diagnostics ==="
 
 # --- wandb login ---
@@ -118,6 +131,14 @@ echo "On GCP: $ON_GCP"
 if [ "$ON_GCP" = true ]; then
   echo "GCP detected — skipping Fabric Manager restart (host manages NVSwitch)"
   echo "NCCL will use NVLink P2P via host-managed fabric + gIB for network"
+  # Ensure /dev/shm is large enough for NCCL IPC (some GCP images have small default)
+  SHM_SIZE=$(df --output=size /dev/shm 2>/dev/null | tail -1 | tr -d ' ')
+  echo "Current /dev/shm size: ${SHM_SIZE}K"
+  if [ -n "$SHM_SIZE" ] && [ "$SHM_SIZE" -lt 16777216 ]; then
+    echo "WARNING: /dev/shm is only ${SHM_SIZE}K — remounting to 16G for NCCL"
+    sudo mount -o remount,size=16G /dev/shm 2>&1 || echo "Failed to remount /dev/shm"
+    df -h /dev/shm
+  fi
 elif [ "$FM_STATUS" != "active" ]; then
   echo "WARNING: Fabric Manager not active. Attempting restart..."
   sudo nvidia-smi -pm 1 2>&1 || true
@@ -208,10 +229,20 @@ if [ "${SKYPILOT_NODE_RANK:-0}" = "0" ]; then
 
   if [ $EXIT_CODE -ne 0 ]; then
     echo "=== Training failed (exit code $EXIT_CODE) ==="
-    echo "--- dmesg (OOM/segfault) ---"
-    sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|out of memory|segfault|sigsegv|general protection" | tail -20 || true
+    echo "--- dmesg (last 50 lines, unfiltered) ---"
+    sudo dmesg -T 2>/dev/null | tail -50 || true
+    echo "--- dmesg (OOM/kill/segfault) ---"
+    sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|out of memory|segfault|sigsegv|general protection|cgroup" | tail -20 || true
+    echo "--- memory ---"
     free -h
+    echo "--- GPU memory ---"
     nvidia-smi --query-gpu=memory.used,memory.free --format=csv 2>/dev/null || true
+    echo "--- /dev/shm after crash ---"
+    df -h /dev/shm 2>/dev/null || true
+    echo "--- cgroup memory events ---"
+    cat /sys/fs/cgroup/memory.events 2>/dev/null || cat /sys/fs/cgroup/memory/memory.oom_control 2>/dev/null || true
+    echo "--- Ray worker logs (last errors) ---"
+    grep -r "SIGKILL\|SIGABRT\|SIGSEGV\|SYSTEM_ERROR\|RuntimeError\|NCCL" /tmp/ray/session_latest/logs/ 2>/dev/null | tail -30 || true
     exit $EXIT_CODE
   fi
 

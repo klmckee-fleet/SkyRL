@@ -541,10 +541,11 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
         env_vars["NCCL_CUMEM_ENABLE"] = "0"
         logger.info("Setting NCCL_CUMEM_ENABLE=0 (not on GCP)")
     elif cfg.generator.weight_sync_backend == "nccl" and _on_gcp:
-        logger.info(
-            "On GCP: skipping all NCCL env var overrides "
-            "(shim + host-managed NVSwitch handle NCCL config)"
-        )
+        logger.info("On GCP: skipping NCCL_CUMEM_ENABLE override " "(shim + host-managed NVSwitch handle NCCL config)")
+        # DEBUG: enable NCCL debug logging on GCP to diagnose FSDP broadcast SIGKILL
+        env_vars["NCCL_DEBUG"] = "INFO"
+        env_vars["NCCL_DEBUG_SUBSYS"] = "ALL"
+        logger.info("Setting NCCL_DEBUG=INFO on GCP for FSDP broadcast diagnostics")
 
     if cfg.trainer.strategy == "megatron":
         # this is needed for megatron-core >= 0.15.0, which requires devices to be visible while importing megatron.core
