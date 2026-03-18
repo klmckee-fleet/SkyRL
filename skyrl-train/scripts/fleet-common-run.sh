@@ -141,25 +141,20 @@ if [ "$ON_GCP" = true ]; then
   # "Failed to initialize any NET plugin" → SIGKILL during dist.broadcast().
   #
   # Fix: check for RDMA devices. If absent, strip gIB so NCCL falls back to
-  # NVLink P2P (intra-node) + Socket/TCP (inter-node). Socket is slower than
-  # RDMA for multi-node but functional.
+  # NVLink P2P for intra-node communication. Multi-node uses GKE with RDMA.
   if [ -d "/sys/class/infiniband" ] && [ "$(ls /sys/class/infiniband/ 2>/dev/null)" ]; then
     echo "RDMA devices found — keeping gIB for GPUDirect RDMA"
   else
-    echo "No RDMA devices — disabling gIB (SkyPilot VMs lack GPUDirect networking)"
-    NUM_NODES=${SKYPILOT_NUM_NODES:-1}
-    if [ "$NUM_NODES" -gt 1 ]; then
-      echo "WARNING: Multi-node ($NUM_NODES nodes) without RDMA — inter-node will use Socket/TCP (slower)"
-    fi
+    echo "No RDMA devices — disabling gIB"
     # Remove gIB from LD_LIBRARY_PATH (set by /etc/profile.d/nccl_env.sh)
     export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | sed 's|/usr/local/gib/lib64:||g; s|:/usr/local/gib/lib64||g; s|/usr/local/gib/lib64||g')
-    # Unset NCCL_NET=gIB so NCCL can fall back to NVLink P2P + Socket
+    # Unset NCCL_NET=gIB so NCCL can fall back to NVLink P2P
     unset NCCL_NET
     # Clear gIB-specific vars set by set_nccl_env.sh
     unset NCCL_CROSS_NIC NCCL_NET_GDR_LEVEL NCCL_P2P_NET_CHUNKSIZE NCCL_NVLS_CHUNKSIZE
     unset NCCL_IB_ADAPTIVE_ROUTING NCCL_IB_QPS_PER_CONNECTION NCCL_IB_TC NCCL_IB_FIFO_TC
     unset NCCL_TUNER_CONFIG_PATH
-    echo "Cleared gIB NCCL env vars. Using NVLink P2P (intra-node) + Socket (inter-node)."
+    echo "Cleared gIB NCCL env vars. Using NVLink P2P (intra-node)."
   fi
   echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
   echo "NCCL vars:"
@@ -194,8 +189,8 @@ export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
 export RAY_object_store_memory=10000000000
 # Disable Ray's memory monitor to prevent spurious worker kills
 export RAY_DISABLE_MEMORY_MONITOR=1
-# NOTE: On GCP single-node, gIB NCCL vars are stripped above.
-# On GCP multi-node, gIB is preserved for inter-node RDMA.
+# NOTE: On GCP VMs without RDMA, gIB NCCL vars are stripped above.
+# On GKE with RDMA, gIB is preserved for inter-node GPUDirect.
 
 read -r head_ip _ <<< "$SKYPILOT_NODE_IPS"
 
