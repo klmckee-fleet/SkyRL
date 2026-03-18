@@ -541,24 +541,16 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
         env_vars["NCCL_CUMEM_ENABLE"] = "0"
         logger.info("Setting NCCL_CUMEM_ENABLE=0 (not on GCP)")
     elif cfg.generator.weight_sync_backend == "nccl" and _on_gcp:
-        # On GCP, the gIB plugin's Config Checker validates NCCL env vars at the
-        # first collective operation and SIGKILLs the process if they don't match.
-        # Forward all NCCL_* vars from os.environ (set by set_nccl_env.sh in the
-        # shell script) to Ray workers via runtime_env.
-        _nccl_vars_forwarded = 0
-        for key, val in os.environ.items():
-            if key.startswith("NCCL_"):
-                env_vars[key] = val
-                _nccl_vars_forwarded += 1
-        logger.info(f"On GCP: forwarded {_nccl_vars_forwarded} NCCL_* env vars from gIB to workers")
-        # Ensure gIB libs are in LD_LIBRARY_PATH for workers
-        _gib_lib = "/usr/local/gib/lib64"
-        _current_ld = os.environ.get("LD_LIBRARY_PATH", "")
-        if _gib_lib not in _current_ld:
-            env_vars["LD_LIBRARY_PATH"] = f"{_gib_lib}:{_current_ld}" if _current_ld else _gib_lib
-            logger.info(f"Prepended {_gib_lib} to LD_LIBRARY_PATH for workers")
-        # Workaround: NVIDIA driver 570 cuMem host allocation bug
-        env_vars["NCCL_CUMEM_HOST_ENABLE"] = "0"
+        # GCP deep learning images auto-load gIB (NCCL_NET=gIB) via /etc/profile.d/nccl_env.sh.
+        # gIB requires RDMA/InfiniBand (/dev/infiniband) for inter-node communication.
+        # For single-node, gIB is NOT needed — intra-node uses NVLink P2P directly.
+        # The shell script (fleet-common-run.sh) handles stripping gIB vars and LD_LIBRARY_PATH
+        # before starting Ray, so workers inherit the correct env from the Raylet.
+        _num_nodes = getattr(getattr(cfg.trainer, "placement", None), "policy_num_nodes", 1)
+        if _num_nodes <= 1:
+            logger.info("On GCP (single-node): gIB disabled by shell script, using NVLink P2P")
+        else:
+            logger.info(f"On GCP ({_num_nodes} nodes): gIB enabled for inter-node RDMA")
 
     if cfg.trainer.strategy == "megatron":
         # this is needed for megatron-core >= 0.15.0, which requires devices to be visible while importing megatron.core

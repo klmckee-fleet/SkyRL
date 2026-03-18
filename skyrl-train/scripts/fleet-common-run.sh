@@ -130,28 +130,41 @@ echo "On GCP: $ON_GCP"
 
 if [ "$ON_GCP" = true ]; then
   echo "GCP detected — skipping Fabric Manager restart (host manages NVSwitch)"
-  echo "NCCL will use NVLink P2P via host-managed fabric + gIB for network"
 
-  # Source gIB NCCL environment variables (CRITICAL for GCP A3 Ultra / A4 instances).
-  # GCP's gIB plugin includes a Config Checker that validates NCCL env vars at the
-  # first collective operation. If vars don't match expected values, it SIGKILLs
-  # the process. Sourcing this script sets the correct values.
-  if [ -f "/usr/local/gib/scripts/set_nccl_env.sh" ]; then
-    echo "Sourcing gIB NCCL environment setup..."
-    source /usr/local/gib/scripts/set_nccl_env.sh
-    echo "gIB NCCL env sourced. Current NCCL vars:"
-    env | grep -i NCCL || echo "  (none)"
+  # GCP's deep learning images install /etc/profile.d/nccl_env.sh which auto-sources
+  # /usr/local/gib/scripts/set_nccl_env.sh and adds /usr/local/gib/lib64 to LD_LIBRARY_PATH.
+  # This sets NCCL_NET=gIB, forcing the gIB network plugin for RDMA/InfiniBand.
+  #
+  # Problem: gIB requires /dev/infiniband (RDMA devices) which may not be available on all
+  # GCP GPU instances. When gIB is forced but can't init, NCCL fails with
+  # "Failed to initialize any NET plugin" → SIGKILL during dist.broadcast().
+  #
+  # For single-node training, we only need NVLink P2P (intra-node), not gIB (inter-node).
+  # Fix: strip gIB from LD_LIBRARY_PATH and unset NCCL_NET so NCCL falls back to
+  # NVLink/P2P + Socket, which works fine for single-node.
+  #
+  # For multi-node, gIB IS needed for inter-node RDMA. Only strip it for single-node.
+  NUM_NODES=${SKYPILOT_NUM_NODES:-1}
+  if [ "$NUM_NODES" -eq 1 ]; then
+    echo "Single-node GCP: disabling gIB (not needed for intra-node NVLink P2P)"
+    # Remove gIB from LD_LIBRARY_PATH (set by /etc/profile.d/nccl_env.sh)
+    export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | sed 's|/usr/local/gib/lib64:||g; s|:/usr/local/gib/lib64||g; s|/usr/local/gib/lib64||g')
+    # Unset NCCL_NET=gIB so NCCL can fall back to NVLink P2P + Socket
+    unset NCCL_NET
+    # Clear other gIB-specific vars that may have been set by set_nccl_env.sh
+    unset NCCL_CROSS_NIC NCCL_NET_GDR_LEVEL NCCL_P2P_NET_CHUNKSIZE NCCL_NVLS_CHUNKSIZE
+    unset NCCL_IB_ADAPTIVE_ROUTING NCCL_IB_QPS_PER_CONNECTION NCCL_IB_TC NCCL_IB_FIFO_TC
+    unset NCCL_TUNER_CONFIG_PATH
+    echo "Cleared gIB NCCL env vars. NCCL will use NVLink P2P for intra-node."
   else
-    echo "WARNING: /usr/local/gib/scripts/set_nccl_env.sh not found"
+    echo "Multi-node GCP ($NUM_NODES nodes): keeping gIB for inter-node RDMA"
+    if [ ! -d "/dev/infiniband" ]; then
+      echo "WARNING: /dev/infiniband not found — gIB may not work!"
+    fi
   fi
-
-  # Ensure gIB shared libraries are discoverable by NCCL
-  export LD_LIBRARY_PATH="/usr/local/gib/lib64:${LD_LIBRARY_PATH:-}"
   echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-
-  # Workaround: NVIDIA driver 560-575 has a cuMem host allocation bug (cuMemImportFromShareableHandle).
-  # Our GCP image uses driver 570.211.01 which is in the affected range.
-  export NCCL_CUMEM_HOST_ENABLE=0
+  echo "NCCL vars:"
+  env | grep -i NCCL || echo "  (none)"
 
   # Ensure /dev/shm is large enough for NCCL IPC (some GCP images have small default)
   SHM_SIZE=$(df --output=size /dev/shm 2>/dev/null | tail -1 | tr -d ' ')
@@ -182,9 +195,8 @@ export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
 export RAY_object_store_memory=10000000000
 # Disable Ray's memory monitor to prevent spurious worker kills
 export RAY_DISABLE_MEMORY_MONITOR=1
-# NOTE: On GCP, NCCL env vars are set by gIB's set_nccl_env.sh above.
-# Do NOT override them manually — the gIB Config Checker validates them at the
-# first collective operation and SIGKILLs the process if they don't match.
+# NOTE: On GCP single-node, gIB NCCL vars are stripped above.
+# On GCP multi-node, gIB is preserved for inter-node RDMA.
 
 read -r head_ip _ <<< "$SKYPILOT_NODE_IPS"
 
