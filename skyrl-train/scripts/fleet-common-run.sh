@@ -95,68 +95,44 @@ echo "=== End Diagnostics ==="
 python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
 
 # --- Fabric Manager check (NVSwitch GPUs: B200, H200 SXM) ---
-# Fabric Manager is REQUIRED for NVLink P2P on NVSwitch systems.
-# Without it, dist.broadcast() in FSDP causes SIGKILL on all workers.
-# On GCP spot VMs, FM often fails to start after VM creation.
+# On non-GCP clouds (RunPod, Lambda, etc.), Fabric Manager is required for NVLink
+# P2P on NVSwitch systems. Without it, dist.broadcast() in FSDP causes SIGKILL.
+#
+# On GCP, NVSwitch is managed at the HOST level — the guest VM does not have
+# NVSwitch devices, so FM reports "NV_WARN_NOTHING_TO_DO" and cannot start.
+# This is EXPECTED. NVLink P2P works through GCP's host-managed fabric without FM.
+# GCP also provides a custom NCCL shim (gIB) that manages all NCCL configuration.
+# Do NOT set NCCL_P2P_DISABLE, NCCL_NVLS_ENABLE, or NCCL_CUMEM_ENABLE on GCP —
+# the shim's "Guest Config Checker" expects these to be unset.
+ON_GCP=false
+if [ -d "/usr/local/gib" ]; then
+  ON_GCP=true
+elif [ -f "/sys/class/dmi/id/product_name" ] && grep -qi "google" /sys/class/dmi/id/product_name 2>/dev/null; then
+  ON_GCP=true
+fi
+
 FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
 echo "Fabric Manager status: $FM_STATUS"
-if [ "$FM_STATUS" != "active" ]; then
-  echo "WARNING: Fabric Manager not active. Attempting aggressive restart..."
-  # Enable persistence mode (required before FM can start)
+echo "On GCP: $ON_GCP"
+
+if [ "$ON_GCP" = true ]; then
+  echo "GCP detected — skipping Fabric Manager restart (host manages NVSwitch)"
+  echo "NCCL will use NVLink P2P via host-managed fabric + gIB for network"
+elif [ "$FM_STATUS" != "active" ]; then
+  echo "WARNING: Fabric Manager not active. Attempting restart..."
   sudo nvidia-smi -pm 1 2>&1 || true
-  # Reset GPUs to clear any stale state
-  sudo nvidia-smi -r 2>&1 || true
-  sleep 2
-  # Stop any zombie FM processes
   sudo systemctl stop nvidia-fabricmanager 2>&1 || true
   sleep 1
-  # Start FM
   sudo systemctl start nvidia-fabricmanager 2>&1 || true
   sleep 5
   FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
-  echo "Fabric Manager status after first attempt: $FM_STATUS"
-
+  echo "Fabric Manager status after restart: $FM_STATUS"
   if [ "$FM_STATUS" != "active" ]; then
-    echo "First attempt failed. Trying with full GPU reset..."
-    sudo systemctl stop nvidia-fabricmanager 2>&1 || true
-    # Full GPU reset cycle
-    sudo nvidia-smi -pm 0 2>&1 || true
-    sleep 2
-    sudo nvidia-smi -pm 1 2>&1 || true
-    sleep 2
-    sudo systemctl start nvidia-fabricmanager 2>&1 || true
-    sleep 5
-    FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
-    echo "Fabric Manager status after second attempt: $FM_STATUS"
-  fi
-
-  if [ "$FM_STATUS" != "active" ]; then
-    echo "=== CRITICAL: Fabric Manager FAILED to start ==="
-    echo "Disabling NCCL P2P and NVLS as fallback (slower but avoids SIGKILL)"
-    echo "--- FM service logs ---"
-    sudo journalctl -u nvidia-fabricmanager --no-pager -n 30 2>&1 || true
-    echo "--- Driver info ---"
-    nvidia-smi --query-gpu=index,name,driver_version --format=csv 2>/dev/null || true
-    echo "--- FM binary ---"
-    ls -la /usr/bin/nv-fabricmanager 2>/dev/null || ls -la /usr/bin/nvidia-fabricmanager 2>/dev/null || echo "FM binary not found"
-    dpkg -l 2>/dev/null | grep -i fabric || true
-    echo "========================="
-    # Disable NVLink P2P and NVLS — forces NCCL to use shared memory transport.
-    # This is slower but avoids SIGKILL when Fabric Manager is down.
-    export NCCL_P2P_DISABLE=1
-    export NCCL_NVLS_ENABLE=0
-    echo "Set NCCL_P2P_DISABLE=1 and NCCL_NVLS_ENABLE=0"
+    echo "=== WARNING: Fabric Manager failed to start ==="
+    echo "Training may fail if this system has NVSwitch GPUs."
+    sudo journalctl -u nvidia-fabricmanager --no-pager -n 10 2>&1 || true
   fi
 fi
-
-# --- NCCL environment diagnostics ---
-echo "=== NCCL Environment ==="
-echo "NCCL shim: $(ls -la /nccl-shim/lib/ 2>/dev/null | head -3 || echo 'not found')"
-echo "GIB config: $(ls -la /usr/local/gib/ 2>/dev/null | head -3 || echo 'not found')"
-echo "NCCL env vars: $(env | grep -i NCCL || echo 'none set')"
-echo "GPU topology:"
-nvidia-smi topo -m 2>/dev/null | head -15 || true
-echo "=== End NCCL Environment ==="
 
 # --- Ray cluster setup (multi-node aware) ---
 export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
