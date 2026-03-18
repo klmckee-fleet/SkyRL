@@ -106,7 +106,20 @@ if [ "$FM_STATUS" != "active" ]; then
   sleep 3
   FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
   echo "Fabric Manager status after start attempt: $FM_STATUS"
+  if [ "$FM_STATUS" != "active" ]; then
+    echo "ERROR: Fabric Manager still not active. Checking logs..."
+    sudo journalctl -u nvidia-fabricmanager --no-pager -n 20 2>&1 || true
+  fi
 fi
+
+# --- NCCL environment diagnostics ---
+echo "=== NCCL Environment ==="
+echo "NCCL shim: $(ls -la /nccl-shim/lib/ 2>/dev/null | head -3 || echo 'not found')"
+echo "GIB config: $(ls -la /usr/local/gib/ 2>/dev/null | head -3 || echo 'not found')"
+echo "NCCL env vars: $(env | grep -i NCCL || echo 'none set')"
+echo "GPU topology:"
+nvidia-smi topo -m 2>/dev/null | head -15 || true
+echo "=== End NCCL Environment ==="
 
 # --- Ray cluster setup (multi-node aware) ---
 export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook

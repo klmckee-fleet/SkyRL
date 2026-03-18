@@ -528,8 +528,14 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
     # configuration including cuMem allocation. Setting NCCL_CUMEM_ENABLE=0 conflicts
     # with the shim and causes FSDP workers to be SIGKILL'd during dist.broadcast().
     _on_gcp = os.path.exists("/nccl-shim") or os.path.exists("/usr/local/gib")
+    logger.info(
+        f"GCP detection: /nccl-shim={os.path.exists('/nccl-shim')}, /usr/local/gib={os.path.exists('/usr/local/gib')}, _on_gcp={_on_gcp}"
+    )
     if cfg.generator.weight_sync_backend == "nccl" and not _on_gcp:
         env_vars["NCCL_CUMEM_ENABLE"] = "0"
+        logger.info("Setting NCCL_CUMEM_ENABLE=0 (not on GCP)")
+    elif cfg.generator.weight_sync_backend == "nccl" and _on_gcp:
+        logger.info("Skipping NCCL_CUMEM_ENABLE=0 (on GCP, NCCL shim manages config)")
 
     if cfg.trainer.strategy == "megatron":
         # this is needed for megatron-core >= 0.15.0, which requires devices to be visible while importing megatron.core
