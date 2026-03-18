@@ -94,6 +94,19 @@ echo "=== End Diagnostics ==="
 # --- wandb login ---
 python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
 
+# --- Fabric Manager check (NVSwitch GPUs: B200, H200 SXM) ---
+# Fabric Manager is required for NVLink P2P on NVSwitch systems.
+# On GCP spot VMs, FM often fails to start after VM creation.
+FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
+echo "Fabric Manager status: $FM_STATUS"
+if [ "$FM_STATUS" != "active" ]; then
+  echo "WARNING: Fabric Manager not active. Attempting to start..."
+  sudo systemctl start nvidia-fabricmanager 2>&1 || true
+  sleep 2
+  FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
+  echo "Fabric Manager status after start attempt: $FM_STATUS"
+fi
+
 # --- Ray cluster setup (multi-node aware) ---
 export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
 export RAY_object_store_memory=10000000000
@@ -103,6 +116,13 @@ export RAY_DISABLE_MEMORY_MONITOR=1
 # Fabric Manager isn't properly reset after VM creation on GCP.
 # See: https://github.com/NVIDIA/nccl/issues/1562
 export NCCL_NVLS_ENABLE=0
+# If Fabric Manager is not running, disable NVLink P2P entirely.
+# Without FM, NCCL P2P over NVSwitch crashes with SIGKILL during broadcasts.
+# Falls back to shared memory transport (slower but functional).
+if [ "$FM_STATUS" != "active" ]; then
+  echo "WARNING: Disabling NCCL P2P (Fabric Manager not active)"
+  export NCCL_P2P_DISABLE=1
+fi
 # NCCL debug logging for distributed communication issues
 export NCCL_DEBUG=WARN
 

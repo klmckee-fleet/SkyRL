@@ -102,8 +102,20 @@ run: |
   nvidia-smi dmon -s mu -d 2 > /tmp/gpu_monitor.log 2>&1 &
   GPU_MON_PID=$!
 
+  # === Try to start Fabric Manager if it's not running ===
+  echo "--- Attempting to start Fabric Manager ---"
+  sudo systemctl start nvidia-fabricmanager 2>&1 || true
+  sleep 2
+  FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
+  echo "Fabric Manager status after start attempt: $FM_STATUS"
+
   # === Env vars for diagnostics ===
   export NCCL_NVLS_ENABLE=0
+  # Disable NVLink P2P if Fabric Manager is not running — forces SHM transport
+  if [ "$FM_STATUS" != "active" ]; then
+    echo "WARNING: Fabric Manager not active ($FM_STATUS), disabling NCCL P2P"
+    export NCCL_P2P_DISABLE=1
+  fi
   export RAY_DISABLE_MEMORY_MONITOR=1
   export NCCL_DEBUG=INFO
   export NCCL_DEBUG_SUBSYS=INIT,NET
