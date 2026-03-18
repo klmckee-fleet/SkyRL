@@ -523,7 +523,12 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
     # NOTE (charlie): See https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
     # and https://docs.vllm.ai/en/v0.9.2/usage/troubleshooting.html?h=nccl_cumem_enable#known-issues
     # Same for SGLang as we set `NCCL_CUMEM_ENABLE` to 0 in `sglang_engine.py`'s _patched_set_envs_and_config
-    if cfg.generator.weight_sync_backend == "nccl":
+    #
+    # Skip on GCP: GCP has a custom NCCL shim (/nccl-shim/) that manages all NCCL
+    # configuration including cuMem allocation. Setting NCCL_CUMEM_ENABLE=0 conflicts
+    # with the shim and causes FSDP workers to be SIGKILL'd during dist.broadcast().
+    _on_gcp = os.path.exists("/nccl-shim") or os.path.exists("/usr/local/gib")
+    if cfg.generator.weight_sync_backend == "nccl" and not _on_gcp:
         env_vars["NCCL_CUMEM_ENABLE"] = "0"
 
     if cfg.trainer.strategy == "megatron":

@@ -17,7 +17,7 @@ resources:
   disk_size: 750
   ports: 6479
   any_of:
-    # 8x GPUs — GCP temporarily disabled (SkyPilot SIGABRT during GCP VM creation)
+    # 8x GPUs (matching VL branch config)
     - accelerators: H200-SXM:8
       cloud: runpod
     - accelerators: B200:8
@@ -30,6 +30,15 @@ resources:
       cloud: nebius
     - accelerators: H200-SXM:8
       cloud: nebius
+    # GCP spot fallback
+    - accelerators: B200:8
+      cloud: gcp
+      use_spot: true
+      image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
+    - accelerators: H200:8
+      cloud: gcp
+      use_spot: true
+      image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
 
 num_nodes: 1
 
@@ -73,54 +82,6 @@ setup: |
     --skip-uv-isolated
 
 run: |
-  # === Diagnostics ===
-  echo "=== SYSTEM DIAGNOSTICS ==="
-  free -h
-  nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv
-  nvidia-smi topo -m 2>/dev/null | head -20 || true
-  nvidia-smi nvlink -s 2>/dev/null | head -20 || true
-  echo "=== END DIAGNOSTICS ==="
-
-  # === Fabric Manager ===
-  echo "=== FABRIC MANAGER ==="
-  systemctl status nvidia-fabricmanager 2>&1 || true
-  sudo journalctl -u nvidia-fabricmanager --no-pager -n 30 2>&1 || true
-  sudo nvidia-smi -pm 1 2>&1 || true
-  sudo systemctl start nvidia-fabricmanager 2>&1 || true
-  sleep 3
-  FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
-  echo "FM status: $FM_STATUS"
-  if [ "$FM_STATUS" != "active" ]; then
-    sudo systemctl stop nvidia-fabricmanager 2>&1 || true
-    sleep 2
-    sudo nvidia-smi -r 2>&1 || true
-    sleep 2
-    sudo systemctl start nvidia-fabricmanager 2>&1 || true
-    sleep 5
-    FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
-    echo "FM status after retry: $FM_STATUS"
-    sudo journalctl -u nvidia-fabricmanager --no-pager -n 20 --since "1 minute ago" 2>&1 || true
-  fi
-  echo "=== END FM ==="
-
-  # === NCCL Shim ===
-  echo "=== NCCL SHIM ==="
-  ls -la /nccl-shim/lib/ 2>/dev/null || echo "/nccl-shim not found"
-  ldconfig -p 2>/dev/null | grep -i nccl || true
-  env | grep -i NCCL || echo "No NCCL vars set"
-  echo "=== END NCCL SHIM ==="
-
-  # CRITICAL: Do NOT set NCCL env vars on GCP. The GCP NCCL shim manages everything.
-  unset NCCL_P2P_DISABLE NCCL_NVLS_ENABLE NCCL_CUMEM_ENABLE NCCL_DEBUG NCCL_DEBUG_SUBSYS 2>/dev/null || true
-  export RAY_DISABLE_MEMORY_MONITOR=1
-  export HYDRA_FULL_ERROR=1
-
-  # GPU monitor
-  nvidia-smi dmon -s mu -d 2 > /tmp/gpu_monitor.log 2>&1 &
-  GPU_MON_PID=$!
-
-  # === Run training ===
-  set +e
   bash skyrl-train/scripts/fleet-common-run.sh \
     --use-python-direct --cuda-env "$HOME/.cuda_env" \
     --set-ulimit --no-pytorch-alloc-conf -- \
@@ -171,24 +132,3 @@ run: |
     trainer.ckpt_path="$HOME/ckpts/fleet_qwen35_${MODALITY}" \
     trainer.export_path="$HOME/exports" \
     trainer.dump_data_batch=true
-  EXIT_CODE=$?
-  set -e
-
-  # Stop GPU monitor
-  kill $GPU_MON_PID 2>/dev/null || true
-
-  # === Post-training diagnostics ===
-  echo "=== POST-TRAINING (exit code: $EXIT_CODE) ==="
-  echo "--- dmesg (OOM/segfault/kill) ---"
-  sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|out of memory|segfault|sigsegv|general protection|traps:" | tail -40 || true
-  echo "--- Memory state ---"
-  free -h
-  echo "--- GPU state ---"
-  nvidia-smi --query-gpu=index,memory.used,memory.free,memory.total --format=csv 2>/dev/null || true
-  echo "--- GPU monitor (last 30 lines) ---"
-  tail -30 /tmp/gpu_monitor.log 2>/dev/null || true
-  echo "--- NCCL env vars at crash time ---"
-  env | grep -i NCCL || echo "No NCCL vars"
-  echo "=== END POST-TRAINING ==="
-
-  exit $EXIT_CODE

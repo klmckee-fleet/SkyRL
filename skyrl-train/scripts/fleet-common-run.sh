@@ -101,8 +101,9 @@ FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknow
 echo "Fabric Manager status: $FM_STATUS"
 if [ "$FM_STATUS" != "active" ]; then
   echo "WARNING: Fabric Manager not active. Attempting to start..."
+  sudo nvidia-smi -pm 1 2>&1 || true
   sudo systemctl start nvidia-fabricmanager 2>&1 || true
-  sleep 2
+  sleep 3
   FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
   echo "Fabric Manager status after start attempt: $FM_STATUS"
 fi
@@ -112,19 +113,10 @@ export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
 export RAY_object_store_memory=10000000000
 # Disable Ray's memory monitor to prevent spurious worker kills
 export RAY_DISABLE_MEMORY_MONITOR=1
-# Disable NCCL NVLS (NVLink SHARP) — causes SIGKILL on H200/B200 when
-# Fabric Manager isn't properly reset after VM creation on GCP.
-# See: https://github.com/NVIDIA/nccl/issues/1562
-export NCCL_NVLS_ENABLE=0
-# If Fabric Manager is not running, disable NVLink P2P entirely.
-# Without FM, NCCL P2P over NVSwitch crashes with SIGKILL during broadcasts.
-# Falls back to shared memory transport (slower but functional).
-if [ "$FM_STATUS" != "active" ]; then
-  echo "WARNING: Disabling NCCL P2P (Fabric Manager not active)"
-  export NCCL_P2P_DISABLE=1
-fi
-# NCCL debug logging for distributed communication issues
-export NCCL_DEBUG=WARN
+# NOTE: Do NOT set NCCL env vars (NCCL_NVLS_ENABLE, NCCL_P2P_DISABLE, NCCL_CUMEM_ENABLE).
+# On GCP, the NCCL shim (/nccl-shim/) manages all NCCL configuration and setting these
+# vars manually conflicts with the shim, causing worker SIGKILL during dist.broadcast().
+# On other clouds these vars are not needed — NCCL handles communication automatically.
 
 read -r head_ip _ <<< "$SKYPILOT_NODE_IPS"
 
