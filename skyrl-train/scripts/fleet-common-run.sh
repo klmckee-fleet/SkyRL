@@ -135,32 +135,31 @@ if [ "$ON_GCP" = true ]; then
   # /usr/local/gib/scripts/set_nccl_env.sh and adds /usr/local/gib/lib64 to LD_LIBRARY_PATH.
   # This sets NCCL_NET=gIB, forcing the gIB network plugin for RDMA/InfiniBand.
   #
-  # Problem: gIB requires /dev/infiniband (RDMA devices) which may not be available on all
-  # GCP GPU instances. When gIB is forced but can't init, NCCL fails with
+  # Problem: gIB requires RDMA hardware (ConnectX NICs + multiple GPUDirect VPC networks).
+  # SkyPilot provisions VMs with a single management NIC — no RDMA networking.
+  # When NCCL_NET=gIB is forced but gIB can't init, NCCL fails with
   # "Failed to initialize any NET plugin" → SIGKILL during dist.broadcast().
   #
-  # For single-node training, we only need NVLink P2P (intra-node), not gIB (inter-node).
-  # Fix: strip gIB from LD_LIBRARY_PATH and unset NCCL_NET so NCCL falls back to
-  # NVLink/P2P + Socket, which works fine for single-node.
-  #
-  # For multi-node, gIB IS needed for inter-node RDMA. Only strip it for single-node.
-  NUM_NODES=${SKYPILOT_NUM_NODES:-1}
-  if [ "$NUM_NODES" -eq 1 ]; then
-    echo "Single-node GCP: disabling gIB (not needed for intra-node NVLink P2P)"
+  # Fix: check for RDMA devices. If absent, strip gIB so NCCL falls back to
+  # NVLink P2P (intra-node) + Socket/TCP (inter-node). Socket is slower than
+  # RDMA for multi-node but functional.
+  if [ -d "/sys/class/infiniband" ] && [ "$(ls /sys/class/infiniband/ 2>/dev/null)" ]; then
+    echo "RDMA devices found — keeping gIB for GPUDirect RDMA"
+  else
+    echo "No RDMA devices — disabling gIB (SkyPilot VMs lack GPUDirect networking)"
+    NUM_NODES=${SKYPILOT_NUM_NODES:-1}
+    if [ "$NUM_NODES" -gt 1 ]; then
+      echo "WARNING: Multi-node ($NUM_NODES nodes) without RDMA — inter-node will use Socket/TCP (slower)"
+    fi
     # Remove gIB from LD_LIBRARY_PATH (set by /etc/profile.d/nccl_env.sh)
     export LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | sed 's|/usr/local/gib/lib64:||g; s|:/usr/local/gib/lib64||g; s|/usr/local/gib/lib64||g')
     # Unset NCCL_NET=gIB so NCCL can fall back to NVLink P2P + Socket
     unset NCCL_NET
-    # Clear other gIB-specific vars that may have been set by set_nccl_env.sh
+    # Clear gIB-specific vars set by set_nccl_env.sh
     unset NCCL_CROSS_NIC NCCL_NET_GDR_LEVEL NCCL_P2P_NET_CHUNKSIZE NCCL_NVLS_CHUNKSIZE
     unset NCCL_IB_ADAPTIVE_ROUTING NCCL_IB_QPS_PER_CONNECTION NCCL_IB_TC NCCL_IB_FIFO_TC
     unset NCCL_TUNER_CONFIG_PATH
-    echo "Cleared gIB NCCL env vars. NCCL will use NVLink P2P for intra-node."
-  else
-    echo "Multi-node GCP ($NUM_NODES nodes): keeping gIB for inter-node RDMA"
-    if [ ! -d "/dev/infiniband" ]; then
-      echo "WARNING: /dev/infiniband not found — gIB may not work!"
-    fi
+    echo "Cleared gIB NCCL env vars. Using NVLink P2P (intra-node) + Socket (inter-node)."
   fi
   echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
   echo "NCCL vars:"

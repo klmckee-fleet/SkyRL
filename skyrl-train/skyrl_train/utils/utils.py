@@ -542,15 +542,20 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
         logger.info("Setting NCCL_CUMEM_ENABLE=0 (not on GCP)")
     elif cfg.generator.weight_sync_backend == "nccl" and _on_gcp:
         # GCP deep learning images auto-load gIB (NCCL_NET=gIB) via /etc/profile.d/nccl_env.sh.
-        # gIB requires RDMA/InfiniBand (/dev/infiniband) for inter-node communication.
-        # For single-node, gIB is NOT needed — intra-node uses NVLink P2P directly.
-        # The shell script (fleet-common-run.sh) handles stripping gIB vars and LD_LIBRARY_PATH
-        # before starting Ray, so workers inherit the correct env from the Raylet.
+        # gIB requires RDMA hardware (ConnectX NICs + GPUDirect VPC networks).
+        # SkyPilot provisions VMs with a single management NIC — no RDMA networking.
+        # Without RDMA devices (/sys/class/infiniband), gIB can't init and SIGKILL's workers.
+        # The shell script (fleet-common-run.sh) detects RDMA absence and strips gIB vars +
+        # LD_LIBRARY_PATH before starting Ray, so workers inherit the correct env.
+        # NCCL falls back to NVLink P2P (intra-node) + Socket/TCP (inter-node).
+        _has_rdma = os.path.isdir("/sys/class/infiniband") and bool(os.listdir("/sys/class/infiniband"))
         _num_nodes = getattr(getattr(cfg.trainer, "placement", None), "policy_num_nodes", 1)
-        if _num_nodes <= 1:
-            logger.info("On GCP (single-node): gIB disabled by shell script, using NVLink P2P")
+        if _has_rdma:
+            logger.info(f"On GCP ({_num_nodes} node(s)): RDMA devices found, gIB enabled for GPUDirect RDMA")
         else:
-            logger.info(f"On GCP ({_num_nodes} nodes): gIB enabled for inter-node RDMA")
+            logger.info(
+                f"On GCP ({_num_nodes} node(s)): no RDMA — gIB stripped by shell script, using NVLink P2P + Socket"
+            )
 
     if cfg.trainer.strategy == "megatron":
         # this is needed for megatron-core >= 0.15.0, which requires devices to be visible while importing megatron.core
