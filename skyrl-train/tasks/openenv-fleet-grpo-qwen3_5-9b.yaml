@@ -92,37 +92,139 @@ run: |
   cat /proc/sys/vm/overcommit_memory
   echo "--- GPU info ---"
   nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv
-  echo "--- Fabric Manager ---"
-  systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "fabricmanager: unknown"
   echo "--- GPU topology ---"
   nvidia-smi topo -m 2>/dev/null | head -20 || true
+  echo "--- NVLink status ---"
+  nvidia-smi nvlink -s 2>/dev/null | head -40 || true
   echo "=== END DIAGNOSTICS ==="
 
-  # Start background GPU memory monitor (every 2 seconds)
+  # === Fabric Manager deep debugging ===
+  echo "=== FABRIC MANAGER DEBUGGING ==="
+  echo "--- FM service status ---"
+  systemctl status nvidia-fabricmanager 2>&1 || true
+  echo "--- FM journal logs (last 50 lines) ---"
+  sudo journalctl -u nvidia-fabricmanager --no-pager -n 50 2>&1 || true
+  echo "--- FM binary ---"
+  which nv-fabricmanager 2>/dev/null || true
+  dpkg -l 2>/dev/null | grep -i fabric || rpm -qa 2>/dev/null | grep -i fabric || true
+  echo "--- FM config ---"
+  cat /usr/share/nvidia/nvswitch/fabricmanager.cfg 2>/dev/null || true
+  echo "--- nvidia-smi -pm 1 (persistence mode) ---"
+  sudo nvidia-smi -pm 1 2>&1 || true
+
+  # Attempt 1: standard start
+  echo "--- FM start attempt 1 (systemctl start) ---"
+  sudo systemctl start nvidia-fabricmanager 2>&1 || true
+  sleep 3
+  FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
+  echo "FM status after attempt 1: $FM_STATUS"
+
+  # Attempt 2: if failed, try restart with fresh state
+  if [ "$FM_STATUS" != "active" ]; then
+    echo "--- FM start attempt 2 (stop + fresh start) ---"
+    sudo systemctl stop nvidia-fabricmanager 2>&1 || true
+    sleep 2
+    # Reset GPU state
+    sudo nvidia-smi -r 2>&1 || true
+    sleep 2
+    sudo systemctl start nvidia-fabricmanager 2>&1 || true
+    sleep 5
+    FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
+    echo "FM status after attempt 2: $FM_STATUS"
+  fi
+
+  # Attempt 3: if still failed, try running FM directly to see the error
+  if [ "$FM_STATUS" != "active" ]; then
+    echo "--- FM start attempt 3 (direct invocation for error) ---"
+    sudo timeout 10 nv-fabricmanager --config /usr/share/nvidia/nvswitch/fabricmanager.cfg 2>&1 || true
+    # Check journal again for new errors
+    echo "--- FM journal after direct invocation ---"
+    sudo journalctl -u nvidia-fabricmanager --no-pager -n 20 --since "1 minute ago" 2>&1 || true
+  fi
+  echo "=== END FM DEBUGGING ==="
+
+  # === GCP NCCL Shim inspection ===
+  echo "=== NCCL SHIM INSPECTION ==="
+  echo "--- /nccl-shim/ contents ---"
+  ls -la /nccl-shim/ 2>/dev/null || echo "/nccl-shim not found"
+  ls -la /nccl-shim/src/ 2>/dev/null || true
+  ls -la /nccl-shim/lib/ 2>/dev/null || true
+  echo "--- NCCL shim config ---"
+  cat /nccl-shim/src/guest_config_checker.cc 2>/dev/null | head -100 || true
+  echo "--- NCCL libraries ---"
+  ldconfig -p 2>/dev/null | grep -i nccl || true
+  echo "--- LD_LIBRARY_PATH ---"
+  echo "$LD_LIBRARY_PATH"
+  echo "--- NCCL env vars (before cleanup) ---"
+  env | grep -i NCCL || echo "No NCCL vars set"
+  echo "=== END NCCL SHIM ==="
+
+  # === CRITICAL: Do NOT set any NCCL env vars on GCP ===
+  # GCP has a custom NCCL shim that manages all NCCL configuration.
+  # Setting NCCL_P2P_DISABLE, NCCL_NVLS_ENABLE, NCCL_CUMEM_ENABLE etc.
+  # conflicts with the shim and may cause worker kills.
+  # UNSET any NCCL vars that fleet-common-run.sh might set:
+  unset NCCL_P2P_DISABLE 2>/dev/null || true
+  unset NCCL_NVLS_ENABLE 2>/dev/null || true
+  unset NCCL_CUMEM_ENABLE 2>/dev/null || true
+  unset NCCL_DEBUG 2>/dev/null || true
+  unset NCCL_DEBUG_SUBSYS 2>/dev/null || true
+
+  # Only set Ray memory monitor disable and Hydra debug
+  export RAY_DISABLE_MEMORY_MONITOR=1
+  export HYDRA_FULL_ERROR=1
+
+  # === NCCL communication test (before training) ===
+  echo "=== NCCL COMMUNICATION TEST ==="
+  python3 << 'NCCL_TEST_EOF'
+  import torch
+  import torch.distributed as dist
+  import os, sys
+
+  # Simple single-process NCCL test: just verify CUDA + NCCL works
+  print(f"PyTorch version: {torch.__version__}")
+  print(f"CUDA available: {torch.cuda.is_available()}")
+  print(f"CUDA device count: {torch.cuda.device_count()}")
+  print(f"NCCL available: {torch.distributed.is_nccl_available()}")
+
+  if torch.cuda.is_available():
+      for i in range(min(torch.cuda.device_count(), 2)):
+          torch.cuda.set_device(i)
+          # Test basic CUDA allocation
+          t = torch.randn(1000, 1000, device=f"cuda:{i}")
+          print(f"GPU {i}: allocated 1000x1000 tensor, sum={t.sum().item():.2f}")
+          del t
+          torch.cuda.empty_cache()
+
+      # Test NCCL init with 2 GPUs via torch.distributed
+      if torch.cuda.device_count() >= 2:
+          os.environ["MASTER_ADDR"] = "127.0.0.1"
+          os.environ["MASTER_PORT"] = "29599"
+          os.environ["WORLD_SIZE"] = "1"
+          os.environ["RANK"] = "0"
+          try:
+              dist.init_process_group(backend="nccl", world_size=1, rank=0)
+              t = torch.randn(100, device="cuda:0")
+              # Single-process broadcast (trivial but tests NCCL init)
+              dist.broadcast(t, src=0)
+              print(f"NCCL single-process broadcast: OK (sum={t.sum().item():.2f})")
+              dist.destroy_process_group()
+          except Exception as e:
+              print(f"NCCL init/broadcast FAILED: {e}")
+      print("NCCL test completed")
+  else:
+      print("ERROR: CUDA not available!")
+  NCCL_TEST_EOF
+  echo "=== END NCCL TEST ==="
+
+  # Start background GPU memory monitor
   nvidia-smi dmon -s mu -d 2 > /tmp/gpu_monitor.log 2>&1 &
   GPU_MON_PID=$!
 
-  # === Try to start Fabric Manager if it's not running ===
-  echo "--- Attempting to start Fabric Manager ---"
-  sudo systemctl start nvidia-fabricmanager 2>&1 || true
-  sleep 2
-  FM_STATUS=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
-  echo "Fabric Manager status after start attempt: $FM_STATUS"
-
-  # === Env vars for diagnostics ===
-  export NCCL_NVLS_ENABLE=0
-  # Disable NVLink P2P if Fabric Manager is not running — forces SHM transport
-  if [ "$FM_STATUS" != "active" ]; then
-    echo "WARNING: Fabric Manager not active ($FM_STATUS), disabling NCCL P2P"
-    export NCCL_P2P_DISABLE=1
-  fi
-  export RAY_DISABLE_MEMORY_MONITOR=1
-  export NCCL_DEBUG=INFO
-  export NCCL_DEBUG_SUBSYS=INIT,NET
-  export HYDRA_FULL_ERROR=1
+  # NOTE: fleet-common-run.sh on main branch does NOT set NCCL env vars,
+  # so no patching needed. The GCP NCCL shim manages all NCCL config.
 
   # === Inline-patch fsdp_utils.py to add GPU memory diagnostics ===
-  FSDP_FILE="skyrl-train/skyrl_train/distributed/fsdp_utils.py"
   python3 << 'PATCH_EOF'
   import pathlib
   p = pathlib.Path("skyrl-train/skyrl_train/distributed/fsdp_utils.py")
@@ -133,7 +235,6 @@ run: |
   new = """def _fsdp_gpu_mem_info():
       import subprocess, os
       try:
-          gpu_id = os.environ.get('CUDA_VISIBLE_DEVICES', str(torch.cuda.current_device()))
           r = subprocess.run(['nvidia-smi', '--query-gpu=memory.used,memory.free,memory.total', '--format=csv,noheader', f'--id={torch.cuda.current_device()}'], capture_output=True, text=True, timeout=5)
           return r.stdout.strip()
       except: return 'N/A'
@@ -145,20 +246,20 @@ run: |
   old2 = "    meta_sharded_sd = model.state_dict()\n    sharded_sd = {}"
   new2 = """    import os, sys
       rank = dist.get_rank()
-      num_params = len(full_sd) if dist.get_rank() == 0 else 0
       print(f'[FSDP_DIAG] Rank {rank} PID {os.getpid()} entering fsdp2_load_full_state_dict, GPU mem: {_fsdp_gpu_mem_info()}', flush=True)
       meta_sharded_sd = model.state_dict()
       sharded_sd = {}
       print(f'[FSDP_DIAG] Rank {rank} got meta_sharded_sd ({len(meta_sharded_sd)} params), GPU mem: {_fsdp_gpu_mem_info()}', flush=True)"""
   code = code.replace(old2, new2, 1)
 
-  # Patch 3: Add logging inside rank-0 loop (every 50 params)
+  # Patch 3: Add logging inside rank-0 loop (every 50 params) + wrap broadcast in try/except
   old3 = "    if dist.get_rank() == 0:\n        for (param_name, full_param), sharded_param in zip(full_sd.items(), meta_sharded_sd.values()):\n            full_param = full_param.detach().cuda()"
   new3 = """    if dist.get_rank() == 0:
           _param_idx = 0
           for (param_name, full_param), sharded_param in zip(full_sd.items(), meta_sharded_sd.values()):
               if _param_idx % 50 == 0:
                   print(f'[FSDP_DIAG] Rank 0 broadcasting param {_param_idx}/{len(full_sd)}: {param_name} shape={full_param.shape} dtype={full_param.dtype}, GPU mem: {_fsdp_gpu_mem_info()}', flush=True)
+                  sys.stdout.flush()
               _param_idx += 1
               full_param = full_param.detach().cuda()"""
   code = code.replace(old3, new3, 1)
@@ -170,6 +271,7 @@ run: |
           for param_name, sharded_param in meta_sharded_sd.items():
               if _param_idx % 50 == 0:
                   print(f'[FSDP_DIAG] Rank {rank} receiving param {_param_idx}/{len(meta_sharded_sd)}: {param_name} shape={sharded_param.size()} dtype={sharded_param.dtype}, GPU mem: {_fsdp_gpu_mem_info()}', flush=True)
+                  sys.stdout.flush()
               _param_idx += 1
               full_tensor = torch.empty(sharded_param.size(), device="cuda", dtype=sharded_param.dtype)"""
   code = code.replace(old4, new4, 1)
@@ -212,6 +314,12 @@ run: |
   p.write_text(code)
   print("Patched fsdp_strategy.py with FSDP2 init diagnostics")
   PATCH2_EOF
+
+  # === Verify no NCCL env vars are set before training ===
+  echo "=== ENV CHECK (pre-training) ==="
+  env | grep -i NCCL || echo "No NCCL vars set (good!)"
+  echo "RAY_DISABLE_MEMORY_MONITOR=$RAY_DISABLE_MEMORY_MONITOR"
+  echo "=== END ENV CHECK ==="
 
   # === Run training ===
   set +e
@@ -281,6 +389,8 @@ run: |
   nvidia-smi --query-gpu=index,memory.used,memory.free,memory.total --format=csv 2>/dev/null || true
   echo "--- GPU monitor (last 30 lines) ---"
   tail -30 /tmp/gpu_monitor.log 2>/dev/null || true
+  echo "--- NCCL env vars at crash time ---"
+  env | grep -i NCCL || echo "No NCCL vars"
   echo "=== END POST-TRAINING ==="
 
   exit $EXIT_CODE
