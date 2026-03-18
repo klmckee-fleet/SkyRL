@@ -86,11 +86,10 @@ jobs:
         run: |
           rm -rf ~/actions-runner/_diag/pages/* 2>/dev/null || true
           rm -rf ~/actions-runner/_work/_temp/* 2>/dev/null || true
-          # Reset SkyPilot state to prevent stale cluster refs causing SIGABRT
+          # Kill stale SkyPilot API server — will restart in Verify step after gcloud is installed
           sky api stop 2>/dev/null || true
           pkill -f "sky api" 2>/dev/null || true
           rm -rf ~/.sky/api_server/ 2>/dev/null || true
-          sky api start 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -122,6 +121,7 @@ jobs:
 
       - name: Verify Cloud Credentials
         run: |
+          sky api start || true
           sky check lambda runpod vast primeintellect nebius gcp || true
           sky status --refresh 2>/dev/null || true
 
