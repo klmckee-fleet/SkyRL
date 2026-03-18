@@ -17,6 +17,13 @@ resources:
   disk_size: 750
   ports: 6479
   any_of:
+    # GKE (fleet-rdma cluster, GPUDirect-RDMA for multi-node, spot)
+    - accelerators: H200:8
+      cloud: kubernetes
+      use_spot: true
+    - accelerators: B200:8
+      cloud: kubernetes
+      use_spot: true
     # 8x GPUs (matching VL branch config)
     - accelerators: H200-SXM:8
       cloud: runpod
@@ -30,7 +37,7 @@ resources:
       cloud: nebius
     - accelerators: H200-SXM:8
       cloud: nebius
-    # GCP spot fallback
+    # GCP (spot first, on-demand fallback)
     - accelerators: B200:8
       cloud: gcp
       use_spot: true
@@ -39,12 +46,18 @@ resources:
       cloud: gcp
       use_spot: true
       image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
+    - accelerators: B200:8
+      cloud: gcp
+      image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
+    - accelerators: H200:8
+      cloud: gcp
+      image_id: projects/deeplearning-platform-release/global/images/common-cu128-ubuntu-2204-nvidia-570-v20260305
 
 num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: deniz/shared-scripts-multinode
+  ref: main
 
 envs:
   WANDB_API_KEY: ""
@@ -79,11 +92,10 @@ setup: |
   bash skyrl-train/scripts/fleet-common-setup.sh \
     --openenv-branch deniz/fleet_client \
     --extra-setup skyrl-train/scripts/fleet-qwen35-extra-setup.sh \
-    --data-root /workspace --skip-uv-isolated
+    --skip-uv-isolated
 
 run: |
   bash skyrl-train/scripts/fleet-common-run.sh \
-    --data-root /workspace --ckpt-root /workspace \
     --use-python-direct --cuda-env "$HOME/.cuda_env" \
     --set-ulimit --no-pytorch-alloc-conf -- \
     environment.skyrl_gym.fleet_task.ttl_seconds=900 \
@@ -124,11 +136,12 @@ run: |
     generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
+    generator.enforce_eager=false \
     generator.gpu_memory_utilization=0.85 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
     trainer.resume_mode=latest \
-    trainer.ckpt_path="/workspace/ckpts/fleet_qwen35_${MODALITY}" \
-    trainer.export_path="/workspace/exports" \
+    trainer.ckpt_path="$HOME/ckpts/fleet_qwen35_${MODALITY}" \
+    trainer.export_path="$HOME/exports" \
     trainer.dump_data_batch=true
