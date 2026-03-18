@@ -527,15 +527,27 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
     # Skip on GCP: GCP has a custom NCCL shim (/nccl-shim/) that manages all NCCL
     # configuration including cuMem allocation. Setting NCCL_CUMEM_ENABLE=0 conflicts
     # with the shim and causes FSDP workers to be SIGKILL'd during dist.broadcast().
-    _on_gcp = os.path.exists("/nccl-shim") or os.path.exists("/usr/local/gib")
+    # Detect GCP: check NCCL shim, GIB directory, and DMI product name
+    _has_nccl_shim = os.path.exists("/nccl-shim")
+    _has_gib = os.path.exists("/usr/local/gib")
+    try:
+        _dmi_product = open("/sys/class/dmi/id/product_name").read().strip()
+    except (FileNotFoundError, PermissionError):
+        _dmi_product = ""
+    _on_gcp = _has_nccl_shim or _has_gib or "Google" in _dmi_product
     logger.info(
-        f"GCP detection: /nccl-shim={os.path.exists('/nccl-shim')}, /usr/local/gib={os.path.exists('/usr/local/gib')}, _on_gcp={_on_gcp}"
+        f"GCP detection: /nccl-shim={_has_nccl_shim}, /usr/local/gib={_has_gib}, "
+        f"dmi_product='{_dmi_product}', _on_gcp={_on_gcp}"
     )
     if cfg.generator.weight_sync_backend == "nccl" and not _on_gcp:
         env_vars["NCCL_CUMEM_ENABLE"] = "0"
         logger.info("Setting NCCL_CUMEM_ENABLE=0 (not on GCP)")
     elif cfg.generator.weight_sync_backend == "nccl" and _on_gcp:
-        logger.info("Skipping NCCL_CUMEM_ENABLE=0 (on GCP, NCCL shim manages config)")
+        logger.info("Skipping NCCL_CUMEM_ENABLE=0 (on GCP)")
+        # Enable NCCL debug logging on GCP to diagnose FSDP worker SIGKILL
+        env_vars["NCCL_DEBUG"] = "INFO"
+        env_vars["NCCL_DEBUG_SUBSYS"] = "INIT,NET"
+        logger.info("Enabling NCCL_DEBUG=INFO on GCP for diagnostics")
 
     if cfg.trainer.strategy == "megatron":
         # this is needed for megatron-core >= 0.15.0, which requires devices to be visible while importing megatron.core
