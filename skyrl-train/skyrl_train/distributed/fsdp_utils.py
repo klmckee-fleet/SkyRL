@@ -276,46 +276,6 @@ def fsdp2_load_full_state_dict(model: torch.nn.Module, full_sd: dict, cpu_offloa
     import torch.distributed as dist
     from torch.distributed.tensor import distribute_tensor
 
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    num_params = len(full_sd) if rank == 0 else 0
-
-    # Diagnostic: log environment before broadcast
-    logger.info(
-        f"[rank {rank}] fsdp2_load_full_state_dict: world_size={world_size}, "
-        f"num_params={num_params}, cuda_device={torch.cuda.current_device()}, "
-        f"gpu_mem_allocated={torch.cuda.memory_allocated()/1e9:.2f}GB, "
-        f"gpu_mem_reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
-    )
-
-    # Diagnostic: check /dev/shm (NCCL uses it for IPC)
-    try:
-        import shutil
-
-        shm = shutil.disk_usage("/dev/shm")
-        logger.info(
-            f"[rank {rank}] /dev/shm: total={shm.total/1e9:.1f}GB, "
-            f"used={shm.used/1e9:.1f}GB, free={shm.free/1e9:.1f}GB"
-        )
-        if shm.total < 1e9:
-            logger.warning(f"[rank {rank}] /dev/shm is only {shm.total/1e6:.0f}MB — NCCL may fail!")
-    except Exception as e:
-        logger.warning(f"[rank {rank}] Could not check /dev/shm: {e}")
-
-    # Diagnostic: test a simple broadcast before weight loading
-    logger.info(f"[rank {rank}] Testing NCCL broadcast (1KB tensor)...")
-    try:
-        _test = torch.zeros(256, device="cuda", dtype=torch.float32)
-        if rank == 0:
-            _test.fill_(42.0)
-        dist.broadcast(_test, src=0)
-        assert _test[0].item() == 42.0, f"Broadcast test failed: expected 42.0, got {_test[0].item()}"
-        logger.info(f"[rank {rank}] NCCL broadcast test PASSED")
-        del _test
-    except Exception as e:
-        logger.error(f"[rank {rank}] NCCL broadcast test FAILED: {e}")
-        raise
-
     # Model was previously copied to meta device
     meta_sharded_sd = model.state_dict()
     sharded_sd = {}
@@ -346,22 +306,11 @@ def fsdp2_load_full_state_dict(model: torch.nn.Module, full_sd: dict, cpu_offloa
             tensor = tensor.contiguous()
         return tensor
 
-    _total_params = len(meta_sharded_sd)
-    _broadcast_count = 0
-
     if dist.get_rank() == 0:
         for (param_name, full_param), sharded_param in zip(full_sd.items(), meta_sharded_sd.values()):
-            if _broadcast_count == 0:
-                logger.info(
-                    f"[rank 0] Starting weight broadcast: first param={param_name}, "
-                    f"shape={list(full_param.shape)}, dtype={full_param.dtype}"
-                )
             full_param = full_param.detach().cuda()
             mesh = sharded_param.device_mesh
             dist.broadcast(full_param, src=0)
-            _broadcast_count += 1
-            if _broadcast_count % 100 == 0:
-                logger.info(f"[rank 0] Broadcast progress: {_broadcast_count}/{_total_params}")
             sharded_tensor = distribute_tensor(full_param, mesh, sharded_param.placements)
             to_contiguous, casting_dtype = _infer_parameter_dtype(
                 model,
@@ -373,17 +322,9 @@ def fsdp2_load_full_state_dict(model: torch.nn.Module, full_sd: dict, cpu_offloa
     # We need this else to have a matching `broadcast` for all of the ranks, else we deadlock
     else:
         for param_name, sharded_param in meta_sharded_sd.items():
-            if _broadcast_count == 0:
-                logger.info(
-                    f"[rank {rank}] Receiving weight broadcast: first param={param_name}, "
-                    f"shape={list(sharded_param.size())}, dtype={sharded_param.dtype}"
-                )
             full_tensor = torch.empty(sharded_param.size(), device="cuda", dtype=sharded_param.dtype)
             mesh = sharded_param.device_mesh
             dist.broadcast(full_tensor, src=0)
-            _broadcast_count += 1
-            if _broadcast_count % 100 == 0:
-                logger.info(f"[rank {rank}] Broadcast progress: {_broadcast_count}/{_total_params}")
             sharded_tensor = distribute_tensor(full_tensor, mesh, sharded_param.placements)
             to_contiguous, casting_dtype = _infer_parameter_dtype(
                 model,
