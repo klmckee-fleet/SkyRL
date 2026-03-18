@@ -132,7 +132,7 @@ if [ "$FM_STATUS" != "active" ]; then
 
   if [ "$FM_STATUS" != "active" ]; then
     echo "=== CRITICAL: Fabric Manager FAILED to start ==="
-    echo "FSDP training will fail without Fabric Manager on NVSwitch GPUs."
+    echo "Disabling NCCL P2P and NVLS as fallback (slower but avoids SIGKILL)"
     echo "--- FM service logs ---"
     sudo journalctl -u nvidia-fabricmanager --no-pager -n 30 2>&1 || true
     echo "--- Driver info ---"
@@ -141,6 +141,11 @@ if [ "$FM_STATUS" != "active" ]; then
     ls -la /usr/bin/nv-fabricmanager 2>/dev/null || ls -la /usr/bin/nvidia-fabricmanager 2>/dev/null || echo "FM binary not found"
     dpkg -l 2>/dev/null | grep -i fabric || true
     echo "========================="
+    # Disable NVLink P2P and NVLS — forces NCCL to use shared memory transport.
+    # This is slower but avoids SIGKILL when Fabric Manager is down.
+    export NCCL_P2P_DISABLE=1
+    export NCCL_NVLS_ENABLE=0
+    echo "Set NCCL_P2P_DISABLE=1 and NCCL_NVLS_ENABLE=0"
   fi
 fi
 

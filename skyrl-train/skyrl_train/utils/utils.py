@@ -544,10 +544,17 @@ def prepare_runtime_environment(cfg: DictConfig) -> dict[str, str]:
         logger.info("Setting NCCL_CUMEM_ENABLE=0 (not on GCP)")
     elif cfg.generator.weight_sync_backend == "nccl" and _on_gcp:
         logger.info("Skipping NCCL_CUMEM_ENABLE=0 (on GCP)")
+        # Propagate shell-level NCCL overrides (set by fleet-common-run.sh when FM fails)
+        for nccl_var in ["NCCL_P2P_DISABLE", "NCCL_NVLS_ENABLE", "NCCL_DEBUG", "NCCL_DEBUG_SUBSYS"]:
+            val = os.environ.get(nccl_var)
+            if val is not None:
+                env_vars[nccl_var] = val
+                logger.info(f"Propagating {nccl_var}={val} to Ray workers")
         # Enable NCCL debug logging on GCP to diagnose FSDP worker SIGKILL
-        env_vars["NCCL_DEBUG"] = "INFO"
-        env_vars["NCCL_DEBUG_SUBSYS"] = "INIT,NET"
-        logger.info("Enabling NCCL_DEBUG=INFO on GCP for diagnostics")
+        if "NCCL_DEBUG" not in env_vars:
+            env_vars["NCCL_DEBUG"] = "INFO"
+            env_vars["NCCL_DEBUG_SUBSYS"] = "INIT,NET"
+            logger.info("Enabling NCCL_DEBUG=INFO on GCP for diagnostics")
 
     if cfg.trainer.strategy == "megatron":
         # this is needed for megatron-core >= 0.15.0, which requires devices to be visible while importing megatron.core
