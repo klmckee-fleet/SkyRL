@@ -131,6 +131,28 @@ echo "On GCP: $ON_GCP"
 if [ "$ON_GCP" = true ]; then
   echo "GCP detected — skipping Fabric Manager restart (host manages NVSwitch)"
   echo "NCCL will use NVLink P2P via host-managed fabric + gIB for network"
+
+  # Source gIB NCCL environment variables (CRITICAL for GCP A3 Ultra / A4 instances).
+  # GCP's gIB plugin includes a Config Checker that validates NCCL env vars at the
+  # first collective operation. If vars don't match expected values, it SIGKILLs
+  # the process. Sourcing this script sets the correct values.
+  if [ -f "/usr/local/gib/scripts/set_nccl_env.sh" ]; then
+    echo "Sourcing gIB NCCL environment setup..."
+    source /usr/local/gib/scripts/set_nccl_env.sh
+    echo "gIB NCCL env sourced. Current NCCL vars:"
+    env | grep -i NCCL || echo "  (none)"
+  else
+    echo "WARNING: /usr/local/gib/scripts/set_nccl_env.sh not found"
+  fi
+
+  # Ensure gIB shared libraries are discoverable by NCCL
+  export LD_LIBRARY_PATH="/usr/local/gib/lib64:${LD_LIBRARY_PATH:-}"
+  echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+
+  # Workaround: NVIDIA driver 560-575 has a cuMem host allocation bug (cuMemImportFromShareableHandle).
+  # Our GCP image uses driver 570.211.01 which is in the affected range.
+  export NCCL_CUMEM_HOST_ENABLE=0
+
   # Ensure /dev/shm is large enough for NCCL IPC (some GCP images have small default)
   SHM_SIZE=$(df --output=size /dev/shm 2>/dev/null | tail -1 | tr -d ' ')
   echo "Current /dev/shm size: ${SHM_SIZE}K"
@@ -160,10 +182,9 @@ export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
 export RAY_object_store_memory=10000000000
 # Disable Ray's memory monitor to prevent spurious worker kills
 export RAY_DISABLE_MEMORY_MONITOR=1
-# NOTE: Do NOT set NCCL env vars (NCCL_NVLS_ENABLE, NCCL_P2P_DISABLE, NCCL_CUMEM_ENABLE).
-# On GCP, the NCCL shim (/nccl-shim/) manages all NCCL configuration and setting these
-# vars manually conflicts with the shim, causing worker SIGKILL during dist.broadcast().
-# On other clouds these vars are not needed — NCCL handles communication automatically.
+# NOTE: On GCP, NCCL env vars are set by gIB's set_nccl_env.sh above.
+# Do NOT override them manually — the gIB Config Checker validates them at the
+# first collective operation and SIGKILLs the process if they don't match.
 
 read -r head_ip _ <<< "$SKYPILOT_NODE_IPS"
 
