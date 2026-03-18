@@ -44,7 +44,7 @@ num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: debug/fsdp-gcp-crash
+  ref: main
 
 envs:
   WANDB_API_KEY: ""
@@ -82,269 +82,57 @@ setup: |
     --skip-uv-isolated
 
 run: |
-  set -euo pipefail
+  # NCCL NVLS fix: disable NVLink SHARP to prevent FSDP worker SIGKILL on GCP
+  # See: https://github.com/NVIDIA/nccl/issues/1562
+  export NCCL_NVLS_ENABLE=0
 
-  echo "========================================="
-  echo "=== GCP FSDP Debug Diagnostics ==="
-  echo "========================================="
-
-  echo "--- System Info ---"
-  uname -a
-  cat /etc/os-release | head -3
-
-  echo "--- Memory ---"
-  free -h
-
-  echo "--- Cgroup Memory Limits ---"
-  echo "memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo 'not found')"
-  echo "memory.current: $(cat /sys/fs/cgroup/memory.current 2>/dev/null || cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || echo 'not found')"
-
-  echo "--- VM Overcommit ---"
-  echo "overcommit_memory: $(cat /proc/sys/vm/overcommit_memory 2>/dev/null || echo 'N/A')"
-  echo "overcommit_ratio: $(cat /proc/sys/vm/overcommit_ratio 2>/dev/null || echo 'N/A')"
-
-  echo "--- NVIDIA Driver ---"
-  nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv 2>/dev/null || echo "nvidia-smi failed"
-
-  echo "--- NVIDIA Fabric Manager ---"
-  systemctl status nvidia-fabricmanager 2>/dev/null | head -10 || echo "nvidia-fabricmanager service not found"
-
-  echo "--- GPU Topology ---"
-  nvidia-smi topo -m 2>/dev/null || echo "nvidia-smi topo not available"
-
-  echo "--- NCCL / NVLink ---"
-  nvidia-smi nvlink --status 2>/dev/null | head -20 || echo "nvlink status not available"
-
-  echo "--- Existing dmesg errors (before test) ---"
-  sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|segfault|sigsegv|general protection|traps:|error|nvidia|nccl" | tail -20 || echo "(none)"
-
-  echo "========================================="
-  echo "=== Running FSDP Reproduction Test ==="
-  echo "========================================="
-
-  cd skyrl-train
-  source .venv/bin/activate
-  source "$HOME/.cuda_env" 2>/dev/null || true
-  ulimit -n 65536
-
-  export RAY_DISABLE_MEMORY_MONITOR=1
-  export NCCL_DEBUG=INFO
-  export NCCL_DEBUG_SUBSYS=INIT,NET
-
-  # Write minimal FSDP test
-  cat > /tmp/test_fsdp.py << 'PYEOF'
-  import os
-  import sys
-  import time
-  import signal
-  import traceback
-
-  def main():
-      print(f"[test_fsdp] Python {sys.version}")
-      print(f"[test_fsdp] PID: {os.getpid()}")
-
-      # Install signal handlers to catch crashes
-      def signal_handler(signum, frame):
-          print(f"[test_fsdp] Received signal {signum} ({signal.Signals(signum).name})")
-          traceback.print_stack(frame)
-          sys.exit(128 + signum)
-      for sig in [signal.SIGSEGV, signal.SIGABRT, signal.SIGTERM, signal.SIGFPE]:
-          try:
-              signal.signal(sig, signal_handler)
-          except (OSError, ValueError):
-              pass
-
-      import torch
-      print(f"[test_fsdp] PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
-      print(f"[test_fsdp] CUDA devices: {torch.cuda.device_count()}")
-      for i in range(torch.cuda.device_count()):
-          props = torch.cuda.get_device_properties(i)
-          free, total = torch.cuda.mem_get_info(i)
-          print(f"  GPU {i}: {props.name}, {total/1e9:.1f}GB total, {free/1e9:.1f}GB free")
-
-      import torch.distributed as dist
-
-      # Test 1: Basic NCCL init
-      print("\n[test_fsdp] === Test 1: NCCL Init ===")
-      try:
-          os.environ['MASTER_ADDR'] = '127.0.0.1'
-          os.environ['MASTER_PORT'] = '29501'
-          os.environ['RANK'] = '0'
-          os.environ['WORLD_SIZE'] = '1'
-          os.environ['LOCAL_RANK'] = '0'
-          torch.cuda.set_device(0)
-          dist.init_process_group(backend='nccl', rank=0, world_size=1)
-          print("[test_fsdp] NCCL init: OK")
-
-          # Test 2: Basic NCCL broadcast
-          print("\n[test_fsdp] === Test 2: NCCL Broadcast ===")
-          t = torch.randn(1000, 1000, device='cuda:0')
-          dist.broadcast(t, src=0)
-          print(f"[test_fsdp] NCCL broadcast (4MB): OK")
-
-          # Test 3: Large broadcast (like model weights)
-          print("\n[test_fsdp] === Test 3: Large NCCL Broadcast ===")
-          t = torch.randn(4096, 4096, device='cuda:0', dtype=torch.float16)
-          dist.broadcast(t, src=0)
-          print(f"[test_fsdp] NCCL broadcast (32MB): OK")
-
-          dist.destroy_process_group()
-      except Exception as e:
-          print(f"[test_fsdp] NCCL test FAILED: {e}")
-          traceback.print_exc()
-
-      # Test 4: Model loading
-      print("\n[test_fsdp] === Test 4: Model Loading ===")
-      try:
-          from transformers import AutoModelForCausalLM, AutoConfig
-          config = AutoConfig.from_pretrained("Qwen/Qwen3.5-9B")
-          print(f"[test_fsdp] Config loaded: {config.model_type}, hidden_size={config.hidden_size}")
-
-          t0 = time.time()
-          model = AutoModelForCausalLM.from_pretrained(
-              "Qwen/Qwen3.5-9B",
-              torch_dtype=torch.float16,
-              device_map="cpu",
-          )
-          dt = time.time() - t0
-          n_params = sum(p.numel() for p in model.parameters()) / 1e9
-          print(f"[test_fsdp] Model loaded: {n_params:.1f}B params in {dt:.1f}s")
-
-          # Test 5: Move to GPU
-          print("\n[test_fsdp] === Test 5: Model to GPU ===")
-          t0 = time.time()
-          model = model.to('cuda:0')
-          dt = time.time() - t0
-          free, total = torch.cuda.mem_get_info(0)
-          print(f"[test_fsdp] Model on GPU in {dt:.1f}s, {free/1e9:.1f}GB free")
-
-          # Test 6: FSDP2 wrapping
-          print("\n[test_fsdp] === Test 6: FSDP2 ===")
-          del model
-          torch.cuda.empty_cache()
-
-          os.environ['MASTER_PORT'] = '29502'
-          torch.cuda.set_device(0)
-          dist.init_process_group(backend='nccl', rank=0, world_size=1)
-
-          model = AutoModelForCausalLM.from_pretrained(
-              "Qwen/Qwen3.5-9B",
-              torch_dtype=torch.float16,
-              device_map="cpu",
-          )
-          from torch.distributed._composable.fsdp import fully_shard
-          for layer in model.model.layers:
-              fully_shard(layer)
-          fully_shard(model)
-          print(f"[test_fsdp] FSDP2 wrapping: OK")
-
-          # Test 7: Forward pass
-          print("\n[test_fsdp] === Test 7: FSDP Forward ===")
-          input_ids = torch.tensor([[1, 2, 3, 4]], device='cuda:0')
-          with torch.no_grad():
-              out = model(input_ids)
-          print(f"[test_fsdp] Forward pass: OK, logits shape={out.logits.shape}")
-
-          dist.destroy_process_group()
-          del model
-          torch.cuda.empty_cache()
-      except Exception as e:
-          print(f"[test_fsdp] Model test FAILED: {e}")
-          traceback.print_exc()
-
-      # Test 8: Multi-GPU FSDP via Ray (the actual crash scenario)
-      print("\n[test_fsdp] === Test 8: Multi-GPU FSDP via Ray ===")
-      try:
-          import ray
-          ray.init(address='auto', ignore_reinit_error=True)
-
-          @ray.remote(num_gpus=1)
-          class FSDPWorker:
-              def init(self):
-                  import os
-                  gpu_id = int(os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0])
-                  pid = os.getpid()
-                  print(f"[Worker {gpu_id}] PID={pid}, starting init")
-
-                  torch.cuda.set_device(0)  # local device
-                  os.environ['MASTER_ADDR'] = '127.0.0.1'
-                  os.environ['MASTER_PORT'] = '29503'
-
-                  # Init process group
-                  dist.init_process_group(
-                      backend='nccl',
-                      rank=gpu_id,
-                      world_size=8,
-                  )
-                  print(f"[Worker {gpu_id}] NCCL init done")
-
-                  # Load model
-                  model = AutoModelForCausalLM.from_pretrained(
-                      "Qwen/Qwen3.5-9B",
-                      torch_dtype=torch.float16,
-                      device_map="cpu",
-                  )
-                  print(f"[Worker {gpu_id}] Model loaded to CPU")
-
-                  # FSDP2 wrap
-                  for layer in model.model.layers:
-                      fully_shard(layer)
-                  fully_shard(model)
-                  print(f"[Worker {gpu_id}] FSDP2 wrapping done")
-
-                  # Forward pass
-                  input_ids = torch.tensor([[1, 2, 3]], device='cuda:0')
-                  with torch.no_grad():
-                      out = model(input_ids)
-                  print(f"[Worker {gpu_id}] Forward pass OK")
-
-                  dist.destroy_process_group()
-                  return f"Worker {gpu_id}: SUCCESS"
-
-          workers = [FSDPWorker.remote() for _ in range(8)]
-          results = ray.get([w.init.remote() for w in workers])
-          for r in results:
-              print(f"[test_fsdp] {r}")
-          ray.shutdown()
-      except Exception as e:
-          print(f"[test_fsdp] Multi-GPU FSDP test FAILED: {e}")
-          traceback.print_exc()
-
-      print("\n[test_fsdp] === ALL TESTS COMPLETE ===")
-
-  if __name__ == '__main__':
-      main()
-  PYEOF
-
-  # Start Ray
-  ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
-
-  echo "--- Running FSDP tests ---"
-  set +e
-  python /tmp/test_fsdp.py 2>&1
-  TEST_EXIT=$?
-  set -e
-
-  echo ""
-  echo "========================================="
-  echo "=== Post-Test Diagnostics ==="
-  echo "========================================="
-  echo "Test exit code: $TEST_EXIT"
-
-  echo "--- dmesg after test ---"
-  sudo dmesg -T 2>/dev/null | tail -80 || echo "dmesg not available"
-
-  echo "--- dmesg OOM/kill/segfault ---"
-  sudo dmesg -T 2>/dev/null | grep -iE "oom|kill|out of memory|segfault|sigsegv|general protection|traps:" | tail -30 || echo "(none)"
-
-  echo "--- Memory after test ---"
-  free -h
-
-  echo "--- GPU memory after test ---"
-  nvidia-smi --query-gpu=memory.used,memory.free --format=csv 2>/dev/null || true
-
-  echo "========================================="
-  echo "=== Debug Complete ==="
-  echo "========================================="
-
-  exit $TEST_EXIT
+  bash skyrl-train/scripts/fleet-common-run.sh \
+    --use-python-direct --cuda-env "$HOME/.cuda_env" \
+    --set-ulimit --no-pytorch-alloc-conf -- \
+    environment.skyrl_gym.fleet_task.ttl_seconds=900 \
+    trainer.algorithm.advantage_estimator=grpo \
+    trainer.policy.model.path="Qwen/Qwen3.5-9B" \
+    trainer.flash_attn=true \
+    trainer.loss_chunk_size=4096 \
+    trainer.use_sample_packing=false \
+    +generator.chat_template_kwargs='{enable_thinking:true}' \
+    generator.inference_engine_tensor_parallel_size=1 \
+    trainer.epochs=${NUM_EPOCHS} \
+    trainer.eval_batch_size=12 \
+    trainer.eval_before_train=true \
+    trainer.eval_interval=20 \
+    trainer.update_epochs_per_batch=1 \
+    trainer.train_batch_size=24 \
+    trainer.use_hybrid_env_sampling=true \
+    trainer.min_samples_per_env=1 \
+    trainer.policy_mini_batch_size=24 \
+    trainer.micro_forward_batch_size_per_gpu=1 \
+    trainer.micro_train_batch_size_per_gpu=1 \
+    trainer.ckpt_interval=10 \
+    trainer.max_prompt_length=2048 \
+    generator.max_input_length=$MAX_INPUT_LENGTH \
+    generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
+    generator.sampling_params.temperature=0.9 \
+    generator.sampling_params.top_p=0.95 \
+    'generator.sampling_params.stop=["</tool_call>"]' \
+    'generator.eval_sampling_params.stop=["</tool_call>"]' \
+    trainer.policy.optimizer_config.lr=1.0e-6 \
+    trainer.algorithm.use_kl_loss=true \
+    generator.max_turns=$MAX_TURNS \
+    generator.backend=$INFERENCE_BACKEND \
+    generator.run_engines_locally=true \
+    generator.weight_sync_backend=nccl \
+    generator.async_engine=true \
+    generator.batched=false \
+    generator.use_conversation_multi_turn=true \
+    generator.n_samples_per_prompt=4 \
+    generator.eval_n_samples_per_prompt=3 \
+    generator.enforce_eager=false \
+    generator.gpu_memory_utilization=0.85 \
+    trainer.logger="$LOGGER" \
+    trainer.project_name="fleet-task-grpo" \
+    trainer.run_name="fleet_qwen35_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
+    trainer.resume_mode=latest \
+    trainer.ckpt_path="$HOME/ckpts/fleet_qwen35_${MODALITY}" \
+    trainer.export_path="$HOME/exports" \
+    trainer.dump_data_batch=true
