@@ -1007,6 +1007,7 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         # --- Hint augmentation: rescue GRPO signal on dead prompts ---
         # Only during training; eval should not run hints.
+        n_raw = len(all_outputs)
         batch_metadata = input_batch.get("batch_metadata")
         is_training = batch_metadata is not None and batch_metadata.training_phase == "train"
         hint_cfg = self.skyrl_gym_cfg.get("fleet_task", DictConfig({}))
@@ -1041,6 +1042,9 @@ class SkyRLGymGenerator(GeneratorInterface):
                             env_extras.append(env_extras[orig_i])
                             break
 
+        # Build is_hinted array: raw samples are False, hint-augmented samples are True
+        is_hinted = [False] * n_raw + [True] * (len(all_outputs) - n_raw)
+
         if self.generator_cfg.step_wise_trajectories:
             responses = []
             rewards = []
@@ -1051,6 +1055,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             is_last_step = []
             out_trajectory_ids = []
             out_env_classes = []
+            out_is_hinted = []
             for i, output in enumerate(all_outputs):
                 for j, step_output in enumerate(output.step_outputs):
                     responses.append(step_output.response_ids)
@@ -1062,7 +1067,9 @@ class SkyRLGymGenerator(GeneratorInterface):
                     is_last_step.append(j == len(output.step_outputs) - 1)
                     out_trajectory_ids.append(trajectory_ids[i])
                     out_env_classes.append(env_classes[i])
+                    out_is_hinted.append(is_hinted[i])
             env_classes = out_env_classes
+            is_hinted = out_is_hinted
         else:
             responses = [output.response_ids for output in all_outputs]
             rewards = [output.reward for output in all_outputs]
@@ -1177,6 +1184,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             "rollout_logprobs": rollout_logprobs,
             "trajectory_ids": out_trajectory_ids,
             "is_last_step": is_last_step,
+            "is_hinted": is_hinted,
         }
 
         return generator_output
