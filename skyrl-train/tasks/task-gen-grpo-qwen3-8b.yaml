@@ -45,7 +45,7 @@ num_nodes: 1
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: deniz/task-scaling
+  ref: deniz/multi-turn-task-gen
 
 envs:
   WANDB_API_KEY: ""
