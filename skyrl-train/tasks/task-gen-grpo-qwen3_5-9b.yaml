@@ -1,5 +1,5 @@
 # Task Generation GRPO Training via SkyPilot - Qwen3.5-9B
-# Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key>
+# Usage: sky launch tasks/task-gen-grpo-qwen3_5-9b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key>
 #
 # Reward: R(task) = llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
 #   llm_validity:    LLM-as-a-judge binary gate (valid task? 0/1)
