@@ -94,7 +94,7 @@ setup: |
   if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then echo "ERROR: AWS credentials required for S3 dataset download"; exit 1; fi
   echo "Environment validation passed"
 
-  uv venv --python 3.12 --seed
+  uv venv --python 3.12 --seed --clear
   source .venv/bin/activate
   uv sync --extra vllm
   # transformers from source: Qwen3.5 model type not in stable release yet (need >=4.58.0)
