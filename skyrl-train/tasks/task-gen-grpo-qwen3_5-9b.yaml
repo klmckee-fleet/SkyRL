@@ -8,7 +8,7 @@
 #   alpha:           Weight balancing variance vs hint gap (default 0.5)
 #
 # Model: Qwen/Qwen3.5-9B (9B params, GatedDeltaNet, 262K native context)
-# GPUs: 4x B200/H200 (text-only fits like 8B)
+# GPUs: 8x B200/H200 (text-only fits like 8B)
 # Multi-turn: model explores seed DB via describe_db/query_db before generating task
 #
 # Requires vLLM >= 0.17.0 (native Qwen3.5/GDN support)
@@ -19,27 +19,27 @@ resources:
   disk_size: 512
   ports: 6479
   any_of:
-    - accelerators: B200:4
+    - accelerators: B200:8
       cloud: lambda
-      memory: 750+
-    - accelerators: B200:4
+      memory: 1500+
+    - accelerators: B200:8
       cloud: runpod
-      memory: 750+
-    - accelerators: B200:4
+      memory: 1500+
+    - accelerators: B200:8
       cloud: primeintellect
-      memory: 750+
-    - accelerators: H200-SXM:4
+      memory: 1500+
+    - accelerators: H200-SXM:8
       cloud: lambda
-      memory: 750+
-    - accelerators: H200-SXM:4
+      memory: 1500+
+    - accelerators: H200-SXM:8
       cloud: runpod
-      memory: 750+
-    - accelerators: H200-SXM:4
+      memory: 1500+
+    - accelerators: H200-SXM:8
       cloud: vast
-      memory: 750+
-    - accelerators: H200-SXM:4
+      memory: 1500+
+    - accelerators: H200-SXM:8
       cloud: primeintellect
-      memory: 750+
+      memory: 1500+
 
 num_nodes: 1
 
