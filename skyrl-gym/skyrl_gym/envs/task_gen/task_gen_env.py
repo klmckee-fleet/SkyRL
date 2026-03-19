@@ -1,25 +1,32 @@
 """
 Task Generation Environment for SkyRL.
 
-Single-turn BaseTextEnv where the LLM generates (prompt, verifier) for a Fleet
-environment. Reward:
+Multi-turn BaseTextEnv where the LLM can explore the seed database via
+``describe_db`` / ``query_db`` meta-tools before generating a task.
 
-    R(task) = validity_gate * (base_reward + variance + alpha * separation)
+When ``max_turns > 1`` (the default), the model explores the DB first
+and then produces a ``<task>`` block.  When ``max_turns == 1`` it
+behaves identically to the original single-turn variant.
 
-    validity_gate: Binary 0/1 from LLM-as-a-judge (is the task well-formed?)
-    base_reward:   Small positive value (default 0.1) for cold-start bootstrap
-    variance:      Score variance across k rollouts on Fleet harness
-    separation:    Performance gap between strong and weak models
-    alpha:         Weight for separation term (default 0.5)
+Reward:
+
+    R(task) = llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
+
+    llm_validity:     Binary 0/1 from LLM-as-a-judge (is the task well-formed?)
+    var(raw_scores):  Variance of k raw evaluator rollouts (difficulty calibration)
+    p_hint - p_raw:   Hint gap — solvable with hints but not without (learnability)
+    alpha:            Weight balancing variance vs hint gap (default 0.5)
 """
 
+import ast
 import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from omegaconf import DictConfig
 
@@ -28,6 +35,7 @@ from skyrl_gym.envs.base_text_env import (
     BaseTextEnvStepOutput,
     ConversationType,
 )
+from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
 from skyrl_gym.envs.task_gen.verifier_sandbox import (
     VerifierSandbox,
     parse_task_output,
@@ -35,26 +43,29 @@ from skyrl_gym.envs.task_gen.verifier_sandbox import (
 
 logger = logging.getLogger(__name__)
 
+# Meta-tools the model can call to explore the seed database.
+_META_TOOLS = {"describe_db", "query_db"}
+
 
 class TaskGenEnv(BaseTextEnv):
     """Environment for RL-based task generation.
 
     The LLM generates (prompt, verifier) pairs for Fleet environments.
-    Single-turn: one generation = one task = one episode.
+    Supports multi-turn: the model can explore the seed DB via ``describe_db``
+    and ``query_db`` meta-tools before outputting a ``<task>`` block.
 
-    Reward = validity_gate * (base_reward + variance + alpha * separation)
+    Reward = llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
 
     Constructor args (via extras, from dataset):
         env_key, env_version, data_key, data_version
         env_tools, env_tools_schema, env_variable_keys
 
     Constructor args (via env_config, from Hydra):
+        max_turns: Max turns before forced termination (default 10)
         judge_model: Model ID for LLM-as-a-judge gate
-        base_reward: Reward for passing the judge gate (default 0.1)
-        evaluator_models: JSON list of Fleet model IDs for rollouts
-        k_rollouts: Number of rollouts per model (default 4)
-        alpha: Weight for separation term (default 0.5)
-        max_eval_steps: Max agent steps per rollout (default 30)
+        k_rollouts: Number of rollouts per condition (raw/hinted, default 4)
+        alpha: Weight for variance term (default 0.5)
+        max_eval_steps: Max agent steps per evaluator rollout (default 30)
     """
 
     def __init__(
@@ -64,8 +75,11 @@ class TaskGenEnv(BaseTextEnv):
     ):
         super().__init__()
 
-        # Single-turn: one generation per episode
-        self.max_turns = 1
+        # Configurable multi-turn (default 10; set to 1 for single-turn)
+        self.max_turns = int(env_config.get("max_turns", 10)) if env_config else 10
+
+        # Fleet orchestrator for DB exploration (set in init_async)
+        self.orch = None
 
         # Environment context from dataset (extras)
         self.env_key = extras.get("env_key", "unknown")
@@ -128,25 +142,8 @@ class TaskGenEnv(BaseTextEnv):
 
         # Judge config (from Hydra env_config)
         self.judge_model = str(env_config.get("judge_model", "")) if env_config else ""
-        self.base_reward = float(env_config.get("base_reward", 0.1)) if env_config else 0.1
 
         # Evaluator config (from Hydra env_config)
-        # Hydra may pass evaluator_models as a ListConfig (from YAML list syntax)
-        # or as a JSON string. Handle both.
-        evaluator_models_raw = env_config.get("evaluator_models", []) if env_config else []
-        if isinstance(evaluator_models_raw, str):
-            try:
-                self.evaluator_models: List[str] = json.loads(evaluator_models_raw)
-            except (json.JSONDecodeError, TypeError):
-                self.evaluator_models: List[str] = []
-        elif isinstance(evaluator_models_raw, (list,)):
-            self.evaluator_models: List[str] = list(evaluator_models_raw)
-        else:
-            # OmegaConf ListConfig or other iterable
-            try:
-                self.evaluator_models: List[str] = list(evaluator_models_raw)
-            except TypeError:
-                self.evaluator_models: List[str] = []
         self.k_rollouts = int(env_config.get("k_rollouts", 4)) if env_config else 4
         self.alpha = float(env_config.get("alpha", 0.5)) if env_config else 0.5
         self.max_eval_steps = int(env_config.get("max_eval_steps", 30)) if env_config else 30
@@ -156,9 +153,9 @@ class TaskGenEnv(BaseTextEnv):
         self.fleet_api_key = os.environ.get("FLEET_API_KEY", "")
 
         logger.info(
-            f"TaskGenEnv: env={self.env_key}, judge={self.judge_model or 'none'}, "
-            f"base_reward={self.base_reward}, tools={len(self.env_tools)}, "
-            f"evaluator_models={self.evaluator_models}, k={self.k_rollouts}, alpha={self.alpha}"
+            f"TaskGenEnv: env={self.env_key}, max_turns={self.max_turns}, "
+            f"judge={self.judge_model or 'none'}, "
+            f"tools={len(self.env_tools)}, k={self.k_rollouts}, alpha={self.alpha}"
         )
 
     def _format_tool_schema(self, tool: Dict[str, Any]) -> str:
@@ -270,17 +267,71 @@ new_rows = [r for r in current_rows if r not in seed_rows]{env_var_api}
 - Don't hardcode expected values — query the DB to find them
 - Reference actual tool names from this environment
 
-## Task Guidelines
+## Task Design Guidelines
 
-- Write as a realistic user request with concrete parameters
-- Vary difficulty: some tasks need 1-2 tool calls, others 5-15+
-- Don't leak the answer in the prompt
-- Use the actual tool names and data entities from this environment
-- Avoid underspecification: if the prompt says "find the designer in Mexico" but multiple exist, the verifier must accept all valid answers (or make the prompt specific enough)
-- Avoid overspecification: specify WHAT to do, not HOW"""
+Design tasks that maximize learnability: an ideal task is one that a capable agent can solve with effort, but not trivially. Tasks that are too easy (always solved) or too hard (never solved) produce no learning signal.
+
+### Realism
+Write prompts as a real user would — natural language, concrete parameters, plausible intent. The task should sound like something a person would actually ask, not a test case.
+
+BAD:  "Call get_user with id=5, then call update_user to set email to test@example.com"
+GOOD: "Update the email address for Jamie Chen to jamie.chen@newdomain.com"
+
+### Avoiding Underspecification
+A prompt is underspecified when multiple valid solutions exist but the verifier only accepts one. This creates false negatives — the agent solves the task correctly but gets reward 0.
+
+BAD prompt:  "Find a designer in Mexico" (3 designers exist, verifier checks for one specific one)
+FIX option 1: Make the prompt specific: "Find the designer in Mexico City who joined after 2023"
+FIX option 2: Make the verifier accept all valid answers: check that ANY designer in Mexico is returned
+
+Use `describe_db`/`query_db` to check the actual data before writing the prompt. If a query returns multiple rows, either narrow the prompt or widen the verifier.
+
+### Avoiding Overspecification
+A prompt is overspecified when it dictates HOW to accomplish the task rather than WHAT outcome is needed. This makes the task trivially easy (no learning signal) and doesn't test real problem-solving.
+
+BAD:  "First call list_tables, then call get_bookings with check_in_date='2024-03-15', then count the results and call submit_answer with the count"
+GOOD: "How many bookings have a check-in date of March 15, 2024?"
+
+The prompt should specify the desired outcome. The agent should figure out which tools to use and in what order.
+
+### Diversity
+Vary tasks across multiple dimensions:
+- Operations: reads (lookup, search, aggregate) AND writes (create, update, delete)
+- Complexity: simple (1-2 tool calls) through complex (5-15+ tool calls with dependencies)
+- Reasoning: some tasks need multi-step logic (find X, use X to look up Y, modify Y based on Z)
+- Data entities: use different tables, columns, and relationships in the schema
+
+### Verifier-Prompt Consistency
+The verifier must check exactly what the prompt asks — no more, no less. Before writing, verify:
+1. Is there exactly one correct outcome for this prompt? (If not, widen the verifier or narrow the prompt)
+2. Does the verifier return 0.0 on a fresh environment? (It must — the agent hasn't acted yet)
+3. Does the verifier avoid hardcoded values? (Query the DB instead)
+4. Could a different valid approach fool the verifier? (If so, fix the verifier to accept it)"""
         )
 
-        # --- C. Output format ---
+        # --- C. Database exploration tools (multi-turn only) ---
+        if self.max_turns > 1:
+            parts.append(
+                """
+## Database Exploration Tools
+
+Before generating a task, explore the seed database to understand the actual data.
+Use these tools to inspect table schemas and query real rows:
+
+<tool_call>{"name": "describe_db", "arguments": {}}</tool_call>
+Returns the full schema: table names, columns, types.
+
+<tool_call>{"name": "query_db", "arguments": {"sql": "SELECT * FROM table_name LIMIT 5"}}</tool_call>
+Runs a read-only SQL query against the seed database.
+
+### Workflow
+1. Call `describe_db` to see all tables and columns.
+2. Call `query_db` with SELECT queries to inspect real data (values, ranges, patterns).
+3. Use what you learned to design a realistic, data-grounded task.
+4. Output the task in the format below."""
+            )
+
+        # --- D. Output format ---
         parts.append(
             """
 ## Output Format
@@ -345,197 +396,209 @@ Generate exactly ONE task. Output it in this format:
             logger.warning(f"LLM judge failed, defaulting to valid: {e}")
             return 1.0
 
-    async def _evaluate_task(self, prompt: str, verifier: str) -> Tuple[float, float]:
-        """Run Fleet harness evaluation and compute variance + separation.
+    @staticmethod
+    def _build_hint_text(
+        verifier_stdout: Optional[str],
+        verifier_error: Optional[str],
+        tool_error_messages: Optional[List[str]],
+    ) -> str:
+        """Build hint text from verifier feedback. No LLM call.
 
-        Imports task to Fleet, creates a harness job with k rollouts per model,
-        polls for completion, then computes:
-        - variance: score variance across ALL rollouts (well-calibrated difficulty)
-        - separation: max model mean - min model mean (discriminates capabilities)
-
-        Returns (variance, separation). Returns (0.0, 0.0) on any failure.
+        Parses ERROR_ACCUMULATOR / SUCCESS_ACCUMULATOR from verifier stdout
+        and formats tool errors into structured feedback for hinted rollouts.
         """
-        if not self.evaluator_models or not self.fleet_api_key:
-            return 0.0, 0.0
+        parts: List[str] = []
+
+        if verifier_stdout:
+            err_match = re.search(
+                r">>> ERROR_ACCUMULATOR >>>\n(.+?)\n<<< ERROR_ACCUMULATOR <<<",
+                verifier_stdout,
+                re.DOTALL,
+            )
+            suc_match = re.search(
+                r">>> SUCCESS_ACCUMULATOR >>>\n(.+?)\n<<< SUCCESS_ACCUMULATOR <<<",
+                verifier_stdout,
+                re.DOTALL,
+            )
+            if err_match or suc_match:
+                try:
+                    errors = ast.literal_eval(err_match.group(1)) if err_match else []
+                    successes = ast.literal_eval(suc_match.group(1)) if suc_match else []
+                except Exception:
+                    errors, successes = [], []
+                if successes:
+                    parts.append(f"Checks passed ({len(successes)}): " + ", ".join(str(s)[:100] for s in successes[:5]))
+                if errors:
+                    parts.append(f"Checks failed ({len(errors)}): " + ", ".join(str(e)[:100] for e in errors[:5]))
+
+        if verifier_error:
+            parts.append(f"Verifier: {verifier_error}")
+
+        if tool_error_messages:
+            unique = list(dict.fromkeys(tool_error_messages))[:5]
+            parts.append("Tool errors: " + "; ".join(e[:200] for e in unique))
+
+        return "\n".join(parts) if parts else "The previous attempt failed. Try a different approach."
+
+    async def _run_evaluator_rollout(
+        self, prompt: str, verifier: str, hint: Optional[str] = None
+    ) -> Tuple[float, Optional[str], Optional[str], Optional[List[str]]]:
+        """Run a single evaluator rollout using FleetTaskEnv.
+
+        Args:
+            prompt: Task prompt.
+            verifier: Verifier code.
+            hint: Optional hint text to append to prompt.
+
+        Returns:
+            (score, verifier_stdout, verifier_error, tool_errors_list)
+        """
+        from envs.fleet_env import FleetTaskEnv
+
+        task_prompt = prompt
+        if hint:
+            task_prompt += f"\n\nHere is feedback from a previous attempt to help you:\n{hint}"
+
+        task_config = {
+            "task_key": f"taskgen_{uuid.uuid4().hex[:8]}",
+            "prompt": task_prompt,
+            "env_key": self.env_key,
+            "env_version": self.env_version or "",
+            "data_key": self.data_key or "",
+            "data_version": self.data_version or "",
+            "verifier_code": verifier,
+            "task_modality": "tool_use",
+        }
+
+        env = FleetTaskEnv(
+            task_config,
+            api_key=self.fleet_api_key,
+            max_steps=self.max_eval_steps,
+            ttl_seconds=900,
+        )
+
+        try:
+            obs = await env.reset_async()
+            done = False
+            while not done:
+                # Simple evaluator policy: submit empty action to let verifier run
+                # The FleetTaskEnv handles tool execution internally
+                obs, reward, done, info = await env.step_async("")
+            score = float(reward) if reward else 0.0
+            return (
+                score,
+                getattr(env, "verifier_stdout", None),
+                getattr(env, "verifier_error", None),
+                getattr(env, "tool_errors_list", None),
+            )
+        except Exception as e:
+            logger.warning(f"Evaluator rollout failed: {e}")
+            return 0.0, None, None, None
+        finally:
+            try:
+                await env.close()
+            except Exception:
+                pass
+
+    async def _evaluate_task(self, prompt: str, verifier: str) -> Dict[str, float]:
+        """Run hint-based evaluation: k raw rollouts + k hinted rollouts.
+
+        1. Run k raw rollouts via FleetTaskEnv
+        2. Build hints from raw rollout feedback (verifier stdout + errors)
+        3. Run k hinted rollouts via FleetTaskEnv (with hint in prompt)
+        4. Compute R = alpha * var(raw) + (p_hint - p_raw)
+
+        Returns reward breakdown dict. Returns zeros on failure.
+        """
+        if not self.fleet_api_key:
+            return {"var_raw": 0.0, "hint_gap": 0.0, "p_raw": 0.0, "p_hint": 0.0}
 
         task_key = f"taskgen_{uuid.uuid4().hex[:12]}"
         start = time.time()
 
         try:
-            from fleet import Fleet
-            from fleet.tasks import Task
+            # 1. Run k raw rollouts in parallel
+            raw_tasks = [self._run_evaluator_rollout(prompt, verifier) for _ in range(self.k_rollouts)]
+            raw_results = await asyncio.gather(*raw_tasks, return_exceptions=True)
 
-            fleet = Fleet(api_key=self.fleet_api_key)
+            raw_scores: List[float] = []
+            # Collect feedback from the first failing rollout for hint building
+            hint_stdout: Optional[str] = None
+            hint_error: Optional[str] = None
+            hint_tool_errors: Optional[List[str]] = None
 
-            # 1. Create and import task
-            task = Task(
-                key=task_key,
-                prompt=prompt,
-                env_id=self.env_key,
-                version=self.env_version or None,
-                verifier_func=verifier,
-                data_id=self.data_key or None,
-                data_version=self.data_version or None,
-                env_variables=self.env_variables,
-            )
+            for r in raw_results:
+                if isinstance(r, Exception):
+                    logger.warning(f"[{task_key}] Raw rollout exception: {r}")
+                    raw_scores.append(0.0)
+                    continue
+                score, v_stdout, v_error, t_errors = r
+                raw_scores.append(score)
+                # Use feedback from the first failing rollout
+                if score < 1.0 and hint_stdout is None:
+                    hint_stdout = v_stdout
+                    hint_error = v_error
+                    hint_tool_errors = t_errors
 
-            import_response = fleet.import_single_task(task)
-            if import_response is None:
-                logger.error(f"[{task_key}] Failed to import task to Fleet")
-                return 0.0, 0.0
+            p_raw = sum(raw_scores) / len(raw_scores) if raw_scores else 0.0
 
-            logger.info(f"[{task_key}] Task imported to Fleet")
+            # 2. Build hint from raw rollout feedback
+            hint_text = self._build_hint_text(hint_stdout, hint_error, hint_tool_errors)
 
-            # 2. Create harness job
-            job_response = fleet.create_job(
-                models=self.evaluator_models,
-                task_keys=[task_key],
-                pass_k=self.k_rollouts,
-                max_steps=self.max_eval_steps,
-                mode="tool-use",
-                name=f"taskgen-eval-{task_key}",
-            )
-            job_id = job_response.job_id
-            logger.info(
-                f"[{task_key}] Harness job {job_id}: " f"models={self.evaluator_models}, pass_k={self.k_rollouts}"
-            )
+            # 3. Run k hinted rollouts in parallel
+            hinted_tasks = [
+                self._run_evaluator_rollout(prompt, verifier, hint=hint_text) for _ in range(self.k_rollouts)
+            ]
+            hinted_results = await asyncio.gather(*hinted_tasks, return_exceptions=True)
 
-            # 3. Poll for completion (async — allows trajectory timeout to cancel)
-            max_poll_time = 1800  # 30 min
-            poll_start = time.time()
-            final_status = "timeout"
-            while time.time() - poll_start < max_poll_time:
-                try:
-                    job = fleet.get_job(job_id)
-                    if job.status in ("completed", "cancelled", "errored"):
-                        final_status = job.status
-                        break
-                except Exception as e:
-                    logger.warning(f"[{task_key}] Poll error: {e}")
-                await asyncio.sleep(10)
+            hinted_scores: List[float] = []
+            for r in hinted_results:
+                if isinstance(r, Exception):
+                    logger.warning(f"[{task_key}] Hinted rollout exception: {r}")
+                    hinted_scores.append(0.0)
+                    continue
+                score, _, _, _ = r
+                hinted_scores.append(score)
 
-            if final_status != "completed":
-                logger.warning(f"[{task_key}] Job {job_id} ended: {final_status}")
-                return 0.0, 0.0
+            p_hint = sum(hinted_scores) / len(hinted_scores) if hinted_scores else 0.0
 
-            # 4. Extract per-model scores
-            results_per_model: Dict[str, List[float]] = {m: [] for m in self.evaluator_models}
-            sessions_response = fleet.list_job_sessions(job_id)
-            for task_group in sessions_response.tasks:
-                for session in task_group.sessions:
-                    # Match model ID (Fleet may strip provider prefix)
-                    matched = None
-                    session_bare = session.model.split("/")[-1] if "/" in session.model else session.model
-                    for configured in self.evaluator_models:
-                        configured_bare = configured.split("/")[-1] if "/" in configured else configured
-                        if session.model == configured or session_bare == configured_bare:
-                            matched = configured
-                            break
+            # 4. Compute reward components
+            from integrations.fleet.task_gen_reward import compute_variance
 
-                    score = 0.0
-                    if session.verifier_execution and session.verifier_execution.score is not None:
-                        score = float(session.verifier_execution.score)
-                    elif session.verifier_execution and getattr(session.verifier_execution, "success", False):
-                        score = 1.0
-
-                    if matched and matched in results_per_model:
-                        results_per_model[matched].append(score)
-                    else:
-                        key = matched or session.model
-                        if key not in results_per_model:
-                            results_per_model[key] = []
-                        results_per_model[key].append(score)
-
-            # 5. Compute variance (across ALL rollouts)
-            all_scores = [s for scores in results_per_model.values() for s in scores]
-            if len(all_scores) > 1:
-                mean = sum(all_scores) / len(all_scores)
-                variance = sum((s - mean) ** 2 for s in all_scores) / len(all_scores)
-            else:
-                variance = 0.0
-
-            # 6. Compute separation (max model mean - min model mean)
-            model_means = []
-            for scores in results_per_model.values():
-                if scores:
-                    model_means.append(sum(scores) / len(scores))
-
-            if len(model_means) >= 2:
-                separation = max(model_means) - min(model_means)
-            else:
-                separation = 0.0
+            var_raw = compute_variance(raw_scores)
+            hint_gap = p_hint - p_raw
 
             duration = time.time() - start
             logger.info(
                 f"[{task_key}] Eval done in {duration:.0f}s: "
-                f"{len(all_scores)} rollouts, variance={variance:.4f}, "
-                f"separation={separation:.4f}, scores={results_per_model}"
+                f"raw={raw_scores} (p={p_raw:.2f}), hinted={hinted_scores} (p={p_hint:.2f}), "
+                f"var_raw={var_raw:.4f}, hint_gap={hint_gap:.4f}"
             )
 
-            return variance, separation
+            return {
+                "var_raw": var_raw,
+                "hint_gap": hint_gap,
+                "p_raw": p_raw,
+                "p_hint": p_hint,
+                "raw_scores": raw_scores,
+                "hinted_scores": hinted_scores,
+            }
 
         except Exception as e:
-            logger.error(f"[{task_key}] Fleet evaluation failed: {e}")
-            return 0.0, 0.0
+            logger.error(f"[{task_key}] Evaluation failed: {e}")
+            return {"var_raw": 0.0, "hint_gap": 0.0, "p_raw": 0.0, "p_hint": 0.0}
 
-    def step(self, action: str) -> BaseTextEnvStepOutput:
-        """Sync step — judge gate only (no Fleet harness).
-
-        Used as fallback when generator doesn't support async.
-        R(task) = judge_gate * base_reward
-        """
-        self.turns += 1
-        metadata: Dict[str, Any] = {"env_key": self.env_key}
-
-        parsed = parse_task_output(action)
-        if parsed is None:
-            metadata["error"] = "parse_failed"
-            metadata["reward_breakdown"] = {"total": 0.0}
-            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
-
-        prompt = parsed["prompt"]
-        verifier = parsed["verifier"]
-        metadata["generated_prompt"] = prompt
-        metadata["generated_verifier"] = verifier
-
-        validation = self.sandbox.validate(verifier, prompt)
-        metadata["validation"] = {
-            "valid": validation.valid,
-            "passed": validation.checks_passed,
-            "failed": validation.checks_failed,
-            "error": validation.error,
-        }
-        if not validation.valid:
-            metadata["reward_breakdown"] = {"sandbox": 0.0, "total": 0.0}
-            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
-
-        judge_gate = self._judge_task(prompt, verifier)
-        metadata["judge_gate"] = judge_gate
-
-        reward = judge_gate * self.base_reward
-        metadata["reward_breakdown"] = {
-            "sandbox": 1.0,
-            "judge": judge_gate,
-            "base_reward": self.base_reward,
-            "total": reward,
-        }
-
-        return BaseTextEnvStepOutput(observations=[], reward=reward, done=True, metadata=metadata)
-
-    async def step_async(self, action: str) -> BaseTextEnvStepOutput:
-        """Async step with Fleet harness evaluation.
-
-        R(task) = validity_gate * (base_reward + variance + alpha * separation)
+    async def _handle_task_generation(self, action: str) -> BaseTextEnvStepOutput:
+        """Evaluate a generated task through the full pipeline.
 
         Pipeline:
-            1. Parse output -> fail = reward 0
+            1. Parse <task> output -> fail = reward 0
             2. Sandbox validation -> fail = reward 0
             3. LLM-as-a-judge -> gate (0/1), fail = reward 0
-            4. Fleet harness -> k rollouts per model -> variance, separation
-            5. Reward = gate * (base_reward + variance + alpha * separation)
+            4. Hint-based evaluation: k raw + k hinted rollouts via FleetTaskEnv
+            5. R = validity * (alpha * var(raw) + (p_hint - p_raw))
         """
-        self.turns += 1
-        metadata: Dict[str, Any] = {"env_key": self.env_key}
+        metadata: Dict[str, Any] = {"env_key": self.env_key, "turn": self.turns}
 
         # 1. Parse
         parsed = parse_task_output(action)
@@ -569,55 +632,195 @@ Generate exactly ONE task. Output it in this format:
             metadata["reward_breakdown"] = {"sandbox": 1.0, "judge": 0.0, "total": 0.0}
             return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
-        # 4. Fleet harness evaluation (async)
-        variance, separation = await self._evaluate_task(prompt, verifier)
-        metadata["variance"] = variance
-        metadata["separation"] = separation
+        # 4. Hint-based evaluation (k raw + k hinted rollouts)
+        eval_result = await self._evaluate_task(prompt, verifier)
 
-        # 5. R = gate * (base_reward + variance + alpha * separation)
-        reward = judge_gate * (self.base_reward + variance + self.alpha * separation)
+        # 5. R = validity * (alpha * var(raw) + (p_hint - p_raw))
+        var_raw = eval_result["var_raw"]
+        hint_gap = eval_result["hint_gap"]
+        reward = judge_gate * (self.alpha * var_raw + hint_gap)
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
             "judge": judge_gate,
-            "base_reward": self.base_reward,
-            "variance": variance,
-            "separation": separation,
+            "var_raw": var_raw,
+            "hint_gap": hint_gap,
+            "p_raw": eval_result["p_raw"],
+            "p_hint": eval_result["p_hint"],
             "alpha": self.alpha,
             "total": reward,
         }
 
         return BaseTextEnvStepOutput(observations=[], reward=reward, done=True, metadata=metadata)
 
-    def init(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
-        """Initialize the environment with env context as the prompt.
+    def step(self, action: str) -> BaseTextEnvStepOutput:
+        """Sync wrapper for step_async."""
+        return asyncio.run(self.step_async(action))
 
-        The dataset provides env_key/env_tools/etc via extras. We build
-        the system prompt from those and return it as the initial conversation.
+    async def step_async(self, action: str) -> BaseTextEnvStepOutput:
+        """Execute one step — tool call, task generation, or nudge.
+
+        Multi-turn flow:
+            1. <task> block detected  → evaluation pipeline (done=True)
+            2. <tool_call> detected   → execute describe_db/query_db (done=False)
+            3. Neither                → nudge observation (done=False)
+            4. max_turns reached      → done=True, reward=0
         """
+        self.turns += 1
+        max_turns_reached = self.turns >= self.max_turns
+
+        # 1. Check for <task> block → evaluation pipeline
+        if "<task>" in action:
+            return await self._handle_task_generation(action)
+
+        # 2. Check for meta-tool call → execute via Fleet orchestrator
+        tool_call = parse_tool_call(action)
+        if tool_call and tool_call["name"] in _META_TOOLS:
+            obs_content = await self._execute_meta_tool(tool_call)
+
+            if max_turns_reached:
+                return BaseTextEnvStepOutput(
+                    observations=[],
+                    reward=0.0,
+                    done=True,
+                    metadata={"env_key": self.env_key, "turn": self.turns, "done_reason": "max_turns"},
+                )
+
+            observation = {"role": "user", "content": obs_content}
+            return BaseTextEnvStepOutput(
+                observations=[observation],
+                reward=0.0,
+                done=False,
+                metadata={"env_key": self.env_key, "turn": self.turns, "tool_call": tool_call},
+            )
+
+        # 3. Neither task nor tool call → nudge
+        if max_turns_reached:
+            return BaseTextEnvStepOutput(
+                observations=[],
+                reward=0.0,
+                done=True,
+                metadata={"env_key": self.env_key, "turn": self.turns, "done_reason": "max_turns"},
+            )
+
+        nudge = (
+            "Use <tool_call> to explore the database, or generate a <task> block."
+            if self.max_turns > 1
+            else "No <task> block found. Output your task in <task>...</task> format."
+        )
+        observation = {"role": "user", "content": nudge}
+        return BaseTextEnvStepOutput(
+            observations=[observation],
+            reward=0.0,
+            done=False,
+            metadata={"env_key": self.env_key, "turn": self.turns},
+        )
+
+    async def _execute_meta_tool(self, tool_call: Dict[str, Any]) -> str:
+        """Execute a describe_db or query_db meta-tool call via the Fleet orchestrator."""
+        name = tool_call["name"]
+        args = tool_call.get("arguments", {})
+
+        if self.orch is None:
+            return "Error: Fleet environment not provisioned. Generate a <task> directly."
+
+        try:
+            if name == "describe_db":
+                result = await self.orch.describe_db_async(db_name=args.get("db_name", "seed"))
+            elif name == "query_db":
+                sql = args.get("sql", "")
+                if not sql:
+                    return "Error: query_db requires a 'sql' argument."
+                result = await self.orch.query_db_async(sql=sql, db_name=args.get("db_name", "seed"))
+            else:
+                return f"Error: Unknown meta-tool '{name}'."
+
+            if isinstance(result, dict):
+                return f"Tool result:\n{json.dumps(result, indent=2, default=str)}"
+            return f"Tool result:\n{result}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def init_async(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
+        """Initialize the environment, optionally provisioning a Fleet env for DB exploration.
+
+        When ``max_turns > 1``, provisions a Fleet environment via
+        ``FleetEnvClient.from_fleet_async`` so the model can call
+        ``describe_db`` / ``query_db`` during exploration turns.
+        Falls back to single-turn if provisioning fails.
+        """
+        self.turns = 0
+        self.orch = None
+
+        # Provision Fleet env for multi-turn DB exploration
+        if self.max_turns > 1 and self.fleet_api_key and self.data_key:
+            try:
+                from envs.fleet_env import FleetEnvClient
+
+                self.orch, _ = await FleetEnvClient.from_fleet_async(
+                    api_key=self.fleet_api_key,
+                    env_key=self.env_key,
+                    data_key=self.data_key,
+                    data_version=self.data_version,
+                    image_type="standard",
+                    ttl_seconds=900,
+                )
+                logger.info(f"TaskGenEnv [{self.env_key}]: Fleet env provisioned for DB exploration")
+            except Exception as e:
+                logger.warning(
+                    f"TaskGenEnv [{self.env_key}]: Fleet provisioning failed, " f"falling back to single-turn: {e}"
+                )
+                self.max_turns = 1
+
         system_prompt = self._build_system_prompt()
 
-        # Build the initial conversation
+        user_content = (
+            f"Explore the database and then generate a task for the {self.env_key} environment."
+            if self.max_turns > 1
+            else f"Generate a task for the {self.env_key} environment."
+        )
+
         conversation = [
             {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": f"Generate a task for the {self.env_key} environment.",
-            },
+            {"role": "user", "content": user_content},
         ]
 
         metadata = {
             "env_key": self.env_key,
             "env_version": self.env_version,
             "num_tools": len(self.env_tools),
+            "multi_turn": self.max_turns > 1,
         }
 
         return conversation, metadata
+
+    def init(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
+        """Sync wrapper for init_async."""
+        return asyncio.run(self.init_async(prompt))
+
+    def close(self):
+        """Close the Fleet orchestrator if provisioned."""
+        if self.orch is not None:
+            try:
+                self.orch.close()
+            except Exception:
+                pass
+            self.orch = None
+
+    async def close_async(self):
+        """Async close — release Fleet orchestrator resources."""
+        if self.orch is not None:
+            try:
+                await self.orch.close_async()
+            except Exception:
+                pass
+            self.orch = None
 
     def get_metrics(self) -> Dict[str, Any]:
         """Return per-episode metrics."""
         return {
             "env_key": self.env_key,
+            "turns": self.turns,
         }
 
     @staticmethod

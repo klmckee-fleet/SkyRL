@@ -1,15 +1,15 @@
 # Task Generation GRPO Training via SkyPilot - Qwen3.5-9B
 # Usage: sky launch tasks/task-gen-grpo-qwen3-8b.yaml --env FLEET_API_KEY=<key> --env WANDB_API_KEY=<key>
 #
-# Reward: R(task) = validity_gate * (base_reward + variance + alpha * separation)
-#   validity_gate: LLM-as-a-judge binary gate (valid task? 0/1)
-#   base_reward:   Cold-start bootstrap (default 0.1)
-#   variance:      Score variance across k Fleet harness rollouts
-#   separation:    Performance gap between models (weighted by alpha)
+# Reward: R(task) = llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
+#   llm_validity:    LLM-as-a-judge binary gate (valid task? 0/1)
+#   var(raw_scores): Variance of k raw evaluator rollouts (difficulty calibration)
+#   p_hint - p_raw:  Hint gap — solvable with hints but not without (learnability)
+#   alpha:           Weight balancing variance vs hint gap (default 0.5)
 #
 # Model: Qwen/Qwen3.5-9B (9B params, GatedDeltaNet, 262K native context)
 # GPUs: 4x B200/H200 (text-only fits like 8B)
-# Single-turn: one generation = one task = one episode
+# Multi-turn: model explores seed DB via describe_db/query_db before generating task
 #
 # Requires vLLM >= 0.17.0 (native Qwen3.5/GDN support)
 
@@ -55,8 +55,8 @@ envs:
   INFERENCE_BACKEND: "vllm"
   DATA_VERSION: "v4"
   MODALITY: "tool_use"
-  # Single-turn: one task generation per episode
-  MAX_TURNS: 1
+  # Multi-turn: exploration + generation (typically 3-5 queries + 1 task)
+  MAX_TURNS: 5
   MAX_INPUT_LENGTH: 8192
   MAX_GENERATE_LENGTH: 8192
   NUM_EPOCHS: 20
@@ -64,12 +64,10 @@ envs:
   MAX_TASKS: ""
   ENV_KEYS: ""
   EVAL_RATIO: "0.005"
-  # Evaluator config
+  # Evaluator config (hint-based: k raw + k hinted rollouts via FleetTaskEnv)
   JUDGE_MODEL: "anthropic/claude-sonnet-4-6"
-  EVALUATOR_MODELS: '["anthropic/claude-sonnet-4.5"]'
   K_ROLLOUTS: 4
   ALPHA: "0.5"
-  BASE_REWARD: "0.1"
   MAX_EVAL_STEPS: 30
   # Supabase (for DB schema discovery - read-only service role key)
   SUPABASE_URL: "https://ehefoavidbttssbleuyv.supabase.co"
@@ -136,8 +134,8 @@ setup: |
   CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall "causal-conv1d==1.5.3.post1"
   uv pip install wandb boto3 awscli supabase
 
-  # Install OpenEnv (from branch) for tool discovery during dataset prep
-  uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/task-scaling" fleet-python logfire "mcp>=1.0.0"
+  # Install OpenEnv (from branch with describe_db/query_db) for tool discovery and DB exploration
+  uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/db-query-tools" fleet-python logfire "mcp>=1.0.0"
 
   # Download dataset from S3
   mkdir -p $HOME/data/fleet
@@ -226,8 +224,8 @@ run: |
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
     generator.sampling_params.temperature=0.9 \
     generator.sampling_params.top_p=0.95 \
-    generator.sampling_params.stop='["</task>"]' \
-    generator.eval_sampling_params.stop='["</task>"]' \
+    generator.sampling_params.stop='["</tool_call>", "</task>"]' \
+    generator.eval_sampling_params.stop='["</tool_call>", "</task>"]' \
     trainer.policy.optimizer_config.lr=1.0e-6 \
     trainer.algorithm.use_kl_loss=true \
     generator.max_turns=$MAX_TURNS \
@@ -237,7 +235,7 @@ run: |
     generator.async_engine=true \
     generator.batched=false \
     generator.trajectory_timeout_seconds=1800 \
-    generator.use_conversation_multi_turn=false \
+    generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
     generator.gpu_memory_utilization=0.8 \
@@ -247,9 +245,8 @@ run: |
     trainer.resume_mode=latest \
     trainer.ckpt_path="$HOME/ckpts/task_gen" \
     trainer.dump_data_batch=true \
+    ++environment.skyrl_gym.task_gen.max_turns=$MAX_TURNS \
     ++environment.skyrl_gym.task_gen.judge_model="$JUDGE_MODEL" \
-    ++environment.skyrl_gym.task_gen.base_reward=$BASE_REWARD \
-    ++environment.skyrl_gym.task_gen.evaluator_models="$EVALUATOR_MODELS" \
     ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
     ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
     ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS

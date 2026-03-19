@@ -2,140 +2,88 @@
 Reward functions for task generation RL.
 
 Computes:
-    R(task) = validity * (variance + alpha * separation)
+    R(task) = llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
 
 Components:
-    - Learnability (variance): Variance of rollout outcomes for the STRONG model
-      (highest solve rate). Maximized when p_solve ≈ 0.5 (max Bernoulli variance = 0.25).
-      We want tasks at the right difficulty for the best model — learnable but not trivial.
-    - Separation: Gap between strongest and weakest model solve rates.
-      Higher = task better differentiates model capabilities.
-    - Validity: Multiplicative gate from verifier_sandbox.py.
-      Returns 0 for broken tasks, killing the entire reward.
+    - var(raw_scores): Variance of k raw (no-hint) evaluator rollouts.
+      Measures difficulty calibration — maximized at p_raw ≈ 0.5
+      (Bernoulli variance = 0.25). Tasks at the evaluator's frontier.
+    - p_hint - p_raw: Hint gap — mean(hinted) minus mean(raw).
+      Positive when hints help, meaning the task is hard but solvable.
+      Captures learnability beyond current capability.
+    - llm_validity: LLM-as-a-judge gate (0/1). Kills reward for broken tasks.
+    - alpha: Weight balancing variance (frontier difficulty) vs hint gap (learnability).
 """
 
 from typing import Any, Dict, List
 
 
-def compute_learnability(results_per_model: Dict[str, List[float]]) -> float:
-    """Compute learnability as variance of the STRONG model's rollouts, normalized to [0, 1].
-
-    Uses the model with the highest solve rate (the "strong" model) and computes
-    the variance of its k binary rollout outcomes. Normalized by max Bernoulli
-    variance (0.25).
-
-    Highest signal when p_solve ≈ 0.5 (some rollouts pass, some fail).
-    Zero signal when p_solve ≈ 0 or p_solve ≈ 1 (all same outcome).
+def compute_variance(scores: List[float]) -> float:
+    """Compute variance of binary rollout scores.
 
     Args:
-        results_per_model: {model_id: [reward_1, reward_2, ..., reward_k]}
+        scores: List of binary (0/1) rollout outcomes.
 
     Returns:
-        Normalized learnability score in [0, 1].
+        Variance in [0, 0.25]. Zero when all same, max at p=0.5.
     """
-    if not results_per_model:
+    if len(scores) < 2:
         return 0.0
-
-    # Find the strong model (highest solve rate)
-    best_results = None
-    best_solve_rate = -1.0
-    for results in results_per_model.values():
-        if len(results) < 2:
-            continue
-        solve_rate = sum(results) / len(results)
-        if solve_rate > best_solve_rate:
-            best_solve_rate = solve_rate
-            best_results = results
-
-    if best_results is None or len(best_results) < 2:
-        return 0.0
-
-    mean = sum(best_results) / len(best_results)
-    var = sum((r - mean) ** 2 for r in best_results) / len(best_results)
-    # Normalize by max Bernoulli variance (0.25) to get [0, 1]
-    return min(var / 0.25, 1.0)
+    mean = sum(scores) / len(scores)
+    return sum((s - mean) ** 2 for s in scores) / len(scores)
 
 
-def compute_separation(results_per_model: Dict[str, List[float]]) -> float:
-    """Compute model separation as solve rate gap.
+def compute_hint_gap(raw_scores: List[float], hinted_scores: List[float]) -> float:
+    """Compute hint gap: mean(hinted) - mean(raw).
 
-    The gap between the best and worst model's solve rate.
-    Higher = task better differentiates model capabilities.
+    Positive when hints help the evaluator solve the task.
+    Zero or negative when hints don't help (task too easy or too hard).
 
     Args:
-        results_per_model: {model_id: [reward_1, reward_2, ..., reward_k]}
+        raw_scores: Scores from evaluator rollouts without hints.
+        hinted_scores: Scores from evaluator rollouts with hints.
 
     Returns:
-        Separation score in [0, 1].
+        Hint gap in [-1, 1].
     """
-    if len(results_per_model) < 2:
+    if not raw_scores or not hinted_scores:
         return 0.0
-
-    solve_rates = {}
-    for model_id, results in results_per_model.items():
-        if results:
-            solve_rates[model_id] = sum(results) / len(results)
-        else:
-            solve_rates[model_id] = 0.0
-
-    return max(solve_rates.values()) - min(solve_rates.values())
+    p_raw = sum(raw_scores) / len(raw_scores)
+    p_hint = sum(hinted_scores) / len(hinted_scores)
+    return p_hint - p_raw
 
 
-def compute_composite_reward(
-    results_per_model: Dict[str, List[float]],
+def compute_task_reward(
+    raw_scores: List[float],
+    hinted_scores: List[float],
     validity: float = 1.0,
     alpha: float = 0.5,
 ) -> Dict[str, float]:
-    """Compute the full composite reward.
+    """Compute the full task generation reward.
 
-    R(task) = validity * (learnability + alpha * separation)
+    R = validity * (alpha * var(raw) + (p_hint - p_raw))
 
     Args:
-        results_per_model: {model_id: [reward_1, ..., reward_k]}
-        validity: Multiplicative gate (0.0 or 1.0)
-        alpha: Weight for separation term
+        raw_scores: Scores from k evaluator rollouts without hints.
+        hinted_scores: Scores from k evaluator rollouts with hints.
+        validity: LLM-as-a-judge gate (0.0 or 1.0).
+        alpha: Weight for variance term.
 
     Returns:
         Dict with all reward components and total.
     """
-    learnability = compute_learnability(results_per_model)
-    separation = compute_separation(results_per_model)
-    total = validity * (learnability + alpha * separation)
+    p_raw = sum(raw_scores) / len(raw_scores) if raw_scores else 0.0
+    p_hint = sum(hinted_scores) / len(hinted_scores) if hinted_scores else 0.0
+    var_raw = compute_variance(raw_scores)
+    hint_gap = p_hint - p_raw
+    total = validity * (alpha * var_raw + hint_gap)
 
     return {
         "validity": validity,
-        "learnability": learnability,
-        "separation": separation,
+        "p_raw": p_raw,
+        "p_hint": p_hint,
+        "var_raw": var_raw,
+        "hint_gap": hint_gap,
         "alpha": alpha,
         "total": total,
     }
-
-
-def compute_per_model_stats(
-    results_per_model: Dict[str, List[float]],
-) -> Dict[str, Dict[str, Any]]:
-    """Compute per-model statistics for logging.
-
-    Args:
-        results_per_model: {model_id: [reward_1, ..., reward_k]}
-
-    Returns:
-        {model_id: {solve_rate, variance, k}} for each model.
-    """
-    stats = {}
-    for model_id, results in results_per_model.items():
-        if not results:
-            stats[model_id] = {"solve_rate": 0.0, "variance": 0.0, "k": 0}
-            continue
-
-        solve_rate = sum(results) / len(results)
-        mean = solve_rate
-        var = sum((r - mean) ** 2 for r in results) / len(results) if len(results) > 1 else 0.0
-
-        stats[model_id] = {
-            "solve_rate": solve_rate,
-            "variance": var,
-            "k": len(results),
-        }
-
-    return stats

@@ -5,11 +5,13 @@ Catches issues like empty tool schemas, missing env_variables, and
 prompt construction failures before they waste GPU hours.
 """
 
+import asyncio
 import importlib.util
 import json
 import os
 import tempfile
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -291,66 +293,108 @@ class TestBuildGRPODataset:
 # ---------------------------------------------------------------------------
 
 
-class TestLearnability:
-    """Test compute_learnability uses strong model variance only."""
+class TestVariance:
+    """Test compute_variance for raw rollout scores."""
 
-    def test_uses_highest_solve_rate_model(self):
-        from integrations.fleet.task_gen_reward import compute_learnability
+    def test_max_variance_at_half(self):
+        from integrations.fleet.task_gen_reward import compute_variance
 
-        results = {
-            "claude-sonnet-4.5": [0.0, 0.0, 0.0, 0.0],  # weak: all fail, var=0
-            "claude-opus-4.5": [1.0, 0.0, 1.0, 0.0],  # strong: 50% solve, var=0.25 (max)
-        }
-        score = compute_learnability(results)
-        assert score == 1.0, f"Expected 1.0 (max learnability), got {score}"
+        scores = [1.0, 0.0, 1.0, 0.0]
+        var = compute_variance(scores)
+        assert var == 0.25, f"Expected 0.25 (max Bernoulli), got {var}"
 
-    def test_zero_when_strong_model_all_pass(self):
-        from integrations.fleet.task_gen_reward import compute_learnability
+    def test_zero_variance_all_pass(self):
+        from integrations.fleet.task_gen_reward import compute_variance
 
-        results = {
-            "claude-sonnet-4.5": [0.0, 0.0, 1.0, 0.0],  # some variance
-            "claude-opus-4.5": [1.0, 1.0, 1.0, 1.0],  # all pass = no variance
-        }
-        score = compute_learnability(results)
-        # Strong model (opus, highest solve rate=1.0) has var=0
-        assert score == 0.0, f"Expected 0.0 (no variance for strong), got {score}"
+        assert compute_variance([1.0, 1.0, 1.0, 1.0]) == 0.0
 
-    def test_single_model(self):
-        from integrations.fleet.task_gen_reward import compute_learnability
+    def test_zero_variance_all_fail(self):
+        from integrations.fleet.task_gen_reward import compute_variance
 
-        results = {"claude-sonnet-4.5": [1.0, 0.0, 1.0, 0.0]}
-        score = compute_learnability(results)
-        assert score == 1.0
-
-    def test_empty_results(self):
-        from integrations.fleet.task_gen_reward import compute_learnability
-
-        assert compute_learnability({}) == 0.0
+        assert compute_variance([0.0, 0.0, 0.0, 0.0]) == 0.0
 
     def test_single_rollout_returns_zero(self):
-        from integrations.fleet.task_gen_reward import compute_learnability
+        from integrations.fleet.task_gen_reward import compute_variance
 
-        results = {"model": [1.0]}
-        assert compute_learnability(results) == 0.0
+        assert compute_variance([1.0]) == 0.0
+
+    def test_empty_returns_zero(self):
+        from integrations.fleet.task_gen_reward import compute_variance
+
+        assert compute_variance([]) == 0.0
 
 
-class TestSeparation:
-    """Test compute_separation computes gap between best and worst models."""
+class TestHintGap:
+    """Test compute_hint_gap measures hint improvement."""
 
-    def test_separation_between_models(self):
-        from integrations.fleet.task_gen_reward import compute_separation
+    def test_positive_hint_gap(self):
+        from integrations.fleet.task_gen_reward import compute_hint_gap
 
-        results = {
-            "claude-sonnet-4.5": [0.0, 0.0, 0.0, 0.0],  # 0% solve
-            "claude-opus-4.5": [1.0, 1.0, 1.0, 0.0],  # 75% solve
-        }
-        assert compute_separation(results) == 0.75
+        gap = compute_hint_gap([0.0, 0.0, 1.0, 0.0], [1.0, 1.0, 1.0, 0.0])
+        assert gap == 0.5  # p_hint=0.75 - p_raw=0.25
 
-    def test_no_separation_with_single_model(self):
-        from integrations.fleet.task_gen_reward import compute_separation
+    def test_zero_gap_same_performance(self):
+        from integrations.fleet.task_gen_reward import compute_hint_gap
 
-        results = {"claude-sonnet-4.5": [1.0, 0.0, 1.0, 0.0]}
-        assert compute_separation(results) == 0.0
+        gap = compute_hint_gap([1.0, 0.0], [1.0, 0.0])
+        assert gap == 0.0
+
+    def test_negative_gap_hints_hurt(self):
+        from integrations.fleet.task_gen_reward import compute_hint_gap
+
+        gap = compute_hint_gap([1.0, 1.0], [0.0, 0.0])
+        assert gap == -1.0
+
+    def test_empty_raw_returns_zero(self):
+        from integrations.fleet.task_gen_reward import compute_hint_gap
+
+        assert compute_hint_gap([], [1.0, 0.0]) == 0.0
+
+    def test_empty_hinted_returns_zero(self):
+        from integrations.fleet.task_gen_reward import compute_hint_gap
+
+        assert compute_hint_gap([1.0, 0.0], []) == 0.0
+
+
+class TestCompositeReward:
+    """Test compute_task_reward end-to-end."""
+
+    def test_full_reward(self):
+        from integrations.fleet.task_gen_reward import compute_task_reward
+
+        # raw: p=0.25 (1/4), var=0.1875; hinted: p=0.75; gap=0.5
+        result = compute_task_reward(
+            raw_scores=[0.0, 0.0, 1.0, 0.0],
+            hinted_scores=[1.0, 1.0, 1.0, 0.0],
+            validity=1.0,
+            alpha=0.5,
+        )
+        expected = 1.0 * (0.5 * 0.1875 + 0.5)
+        assert abs(result["total"] - expected) < 1e-6
+        assert result["var_raw"] == 0.1875
+        assert result["hint_gap"] == 0.5
+
+    def test_validity_gate_kills_reward(self):
+        from integrations.fleet.task_gen_reward import compute_task_reward
+
+        result = compute_task_reward(
+            raw_scores=[0.0, 0.0, 1.0, 0.0],
+            hinted_scores=[1.0, 1.0, 1.0, 0.0],
+            validity=0.0,
+        )
+        assert result["total"] == 0.0
+
+    def test_trivial_task_no_gap(self):
+        from integrations.fleet.task_gen_reward import compute_task_reward
+
+        # All pass raw — trivial, no hint gap, no variance
+        result = compute_task_reward(
+            raw_scores=[1.0, 1.0, 1.0, 1.0],
+            hinted_scores=[1.0, 1.0, 1.0, 1.0],
+        )
+        assert result["total"] == 0.0
+        assert result["var_raw"] == 0.0
+        assert result["hint_gap"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -362,11 +406,14 @@ class TestSeparation:
 class TestTaskGenEnvPrompt:
     """Test TaskGenEnv builds correct system prompts."""
 
-    def _make_env(self, **extra_overrides):
+    def _make_env(self, env_config_overrides=None, **extra_overrides):
         from omegaconf import DictConfig
         from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
 
-        env_config = DictConfig({"alpha": 0.5, "k_rollouts": 4, "models": ["weak"]})
+        cfg = {"alpha": 0.5, "k_rollouts": 4, "models": ["weak"], "max_turns": 1}
+        if env_config_overrides:
+            cfg.update(env_config_overrides)
+        env_config = DictConfig(cfg)
         extras = {
             "env_key": "testenv",
             "env_version": "v1",
@@ -412,9 +459,8 @@ class TestTaskGenEnvPrompt:
         env = self._make_env()
         prompt = env._build_system_prompt()
         assert "Verifier Guidelines" in prompt
-        assert "async def verify" in prompt
-        assert "Task Guidelines" in prompt
-        assert "structural complexity" in prompt
+        assert "def verify(env" in prompt
+        assert "Task Design Guidelines" in prompt
 
     def test_system_prompt_contains_output_format(self):
         env = self._make_env()
@@ -460,3 +506,303 @@ class TestTaskGenEnvPrompt:
         system_content = conversation[0]["content"]
         assert system_content != "", "System prompt is empty! Model will hallucinate tools."
         assert system_content.strip() != "", "System prompt is whitespace-only!"
+
+
+# ---------------------------------------------------------------------------
+# Tests: parse_tool_call (from tool_call_parser.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not SKYRL_GYM_AVAILABLE, reason="skyrl_gym not installed")
+class TestParseToolCall:
+    """Tests for tool_call_parser.parse_tool_call."""
+
+    def test_valid_tool_call(self):
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = '<tool_call>{"name": "describe_db", "arguments": {}}</tool_call>'
+        result = parse_tool_call(action)
+        assert result is not None
+        assert result["name"] == "describe_db"
+        assert result["arguments"] == {}
+
+    def test_tool_call_with_arguments(self):
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = '<tool_call>{"name": "query_db", "arguments": {"sql": "SELECT * FROM users LIMIT 5"}}</tool_call>'
+        result = parse_tool_call(action)
+        assert result is not None
+        assert result["name"] == "query_db"
+        assert result["arguments"]["sql"] == "SELECT * FROM users LIMIT 5"
+
+    def test_missing_closing_tag(self):
+        """Stop string </tool_call> may not be in output."""
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = '<tool_call>{"name": "describe_db", "arguments": {}}'
+        result = parse_tool_call(action)
+        assert result is not None
+        assert result["name"] == "describe_db"
+
+    def test_invalid_json(self):
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = "<tool_call>{not valid json}</tool_call>"
+        result = parse_tool_call(action)
+        assert result is None
+
+    def test_no_match(self):
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = "I will now generate a task."
+        result = parse_tool_call(action)
+        assert result is None
+
+    def test_json_with_missing_braces(self):
+        """Models sometimes drop trailing braces."""
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = '<tool_call>{"name": "query_db", "arguments": {"sql": "SELECT 1"}'
+        result = parse_tool_call(action)
+        assert result is not None
+        assert result["name"] == "query_db"
+
+    def test_function_call_tag(self):
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = '<function_call>{"name": "describe_db", "arguments": {}}</function_call>'
+        result = parse_tool_call(action)
+        assert result is not None
+        assert result["name"] == "describe_db"
+
+    def test_tool_key_normalization(self):
+        """'tool' key should be normalized to 'name'."""
+        from skyrl_gym.envs.task_gen.tool_call_parser import parse_tool_call
+
+        action = '<tool_call>{"tool": "query_db", "params": {"sql": "SELECT 1"}}</tool_call>'
+        result = parse_tool_call(action)
+        assert result is not None
+        assert result["name"] == "query_db"
+        assert result["arguments"] == {"sql": "SELECT 1"}
+
+
+# ---------------------------------------------------------------------------
+# Tests: Multi-turn TaskGenEnv
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not SKYRL_GYM_AVAILABLE, reason="skyrl_gym not installed")
+class TestTaskGenEnvMultiTurn:
+    """Tests for multi-turn task generation (DB exploration + task output)."""
+
+    def _make_env(self, max_turns=5, **extra_overrides):
+        from omegaconf import DictConfig
+        from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
+
+        env_config = DictConfig({"alpha": 0.5, "k_rollouts": 4, "models": ["weak"], "max_turns": max_turns})
+        extras = {
+            "env_key": "testenv",
+            "env_version": "v1",
+            "data_key": "kinesis",
+            "data_version": "v0.0.1",
+            "env_tools": json.dumps(["search_products", "add_to_cart"]),
+            "env_tools_schema": json.dumps(SAMPLE_TOOL_SCHEMAS),
+            "env_variable_keys": json.dumps(["LOGGED_IN_USER"]),
+        }
+        extras.update(extra_overrides)
+        return TaskGenEnv(env_config=env_config, extras=extras)
+
+    def test_max_turns_from_env_config(self):
+        env = self._make_env(max_turns=7)
+        assert env.max_turns == 7
+
+    def test_default_max_turns(self):
+        from omegaconf import DictConfig
+        from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
+
+        env_config = DictConfig({})
+        extras = {"env_key": "test"}
+        env = TaskGenEnv(env_config=env_config, extras=extras)
+        assert env.max_turns == 10
+
+    def test_system_prompt_includes_meta_tools_when_multi_turn(self):
+        env = self._make_env(max_turns=5)
+        prompt = env._build_system_prompt()
+        assert "Database Exploration Tools" in prompt
+        assert "describe_db" in prompt
+        assert "query_db" in prompt
+
+    def test_system_prompt_excludes_meta_tools_when_single_turn(self):
+        env = self._make_env(max_turns=1)
+        prompt = env._build_system_prompt()
+        assert "Database Exploration Tools" not in prompt
+
+    def test_step_async_tool_call_returns_observation(self):
+        """Tool call should return observation with done=False."""
+        env = self._make_env(max_turns=5)
+
+        # Mock the orchestrator
+        mock_orch = MagicMock()
+        mock_orch.describe_db_async = AsyncMock(
+            return_value={
+                "success": True,
+                "tables": [{"name": "users", "columns": [{"name": "id", "type": "INTEGER"}]}],
+            }
+        )
+        env.orch = mock_orch
+
+        action = '<tool_call>{"name": "describe_db", "arguments": {}}</tool_call>'
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is False
+        assert result["reward"] == 0.0
+        assert len(result["observations"]) == 1
+        assert "Tool result:" in result["observations"][0]["content"]
+        assert "users" in result["observations"][0]["content"]
+
+    def test_step_async_query_db(self):
+        """query_db tool call should execute and return results."""
+        env = self._make_env(max_turns=5)
+
+        mock_orch = MagicMock()
+        mock_orch.query_db_async = AsyncMock(
+            return_value={
+                "success": True,
+                "columns": ["id", "name"],
+                "rows": [[1, "Alice"], [2, "Bob"]],
+            }
+        )
+        env.orch = mock_orch
+
+        action = '<tool_call>{"name": "query_db", "arguments": {"sql": "SELECT * FROM users"}}</tool_call>'
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is False
+        assert "Alice" in result["observations"][0]["content"]
+        assert "Bob" in result["observations"][0]["content"]
+
+    def test_step_async_task_after_exploration(self):
+        """After tool calls, a <task> block should trigger evaluation (done=True)."""
+        env = self._make_env(max_turns=5)
+
+        # Mock orch for exploration turn
+        mock_orch = MagicMock()
+        mock_orch.describe_db_async = AsyncMock(return_value={"success": True, "tables": []})
+        env.orch = mock_orch
+
+        # Turn 1: explore
+        result1 = asyncio.run(env.step_async('<tool_call>{"name": "describe_db", "arguments": {}}</tool_call>'))
+        assert result1["done"] is False
+        assert env.turns == 1
+
+        # Turn 2: generate task
+        task_action = """<task>
+<prompt>Search for a product called "Widget" and add it to the cart.</prompt>
+<verifier>
+def verify(env, final_answer=None):
+    env.instance.load()
+    current = env.db("current")
+    cart_items = current.table("cart_items").all()
+    if not cart_items:
+        return 0.0
+    for item in cart_items:
+        if "widget" in str(item.get("name", "")).lower():
+            return 1.0
+    return 0.0
+</verifier>
+</task>"""
+
+        result2 = asyncio.run(env.step_async(task_action))
+        assert result2["done"] is True
+        assert env.turns == 2
+
+    def test_step_async_max_turns_on_tool_call(self):
+        """When max_turns is reached during a tool call, done=True."""
+        env = self._make_env(max_turns=1)
+
+        mock_orch = MagicMock()
+        mock_orch.describe_db_async = AsyncMock(return_value={"success": True, "tables": []})
+        env.orch = mock_orch
+
+        action = '<tool_call>{"name": "describe_db", "arguments": {}}</tool_call>'
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is True
+        assert result["reward"] == 0.0
+        assert result["metadata"]["done_reason"] == "max_turns"
+
+    def test_step_async_max_turns_on_nudge(self):
+        """When max_turns is reached with no tool call/task, done=True."""
+        env = self._make_env(max_turns=1)
+
+        action = "I'm thinking about what task to generate..."
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is True
+        assert result["reward"] == 0.0
+        assert result["metadata"]["done_reason"] == "max_turns"
+
+    def test_step_async_nudge_message(self):
+        """Without tool call or task, env should nudge the model."""
+        env = self._make_env(max_turns=5)
+
+        action = "Let me think about this..."
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is False
+        assert (
+            "tool_call" in result["observations"][0]["content"].lower()
+            or "<task>" in result["observations"][0]["content"]
+        )
+
+    def test_step_async_no_orch_returns_error(self):
+        """Tool call without provisioned orch should return error message."""
+        env = self._make_env(max_turns=5)
+        assert env.orch is None
+
+        action = '<tool_call>{"name": "describe_db", "arguments": {}}</tool_call>'
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is False
+        assert "not provisioned" in result["observations"][0]["content"]
+
+    def test_step_async_query_db_missing_sql(self):
+        """query_db without sql argument should return error."""
+        env = self._make_env(max_turns=5)
+        mock_orch = MagicMock()
+        env.orch = mock_orch
+
+        action = '<tool_call>{"name": "query_db", "arguments": {}}</tool_call>'
+        result = asyncio.run(env.step_async(action))
+
+        assert result["done"] is False
+        assert "requires" in result["observations"][0]["content"].lower()
+
+    def test_close_async(self):
+        """close_async should call orch.close_async and set orch to None."""
+        env = self._make_env(max_turns=5)
+        mock_orch = MagicMock()
+        mock_orch.close_async = AsyncMock()
+        env.orch = mock_orch
+
+        asyncio.run(env.close_async())
+
+        mock_orch.close_async.assert_called_once()
+        assert env.orch is None
+
+    def test_close_async_handles_error(self):
+        """close_async should not raise on orch.close_async failure."""
+        env = self._make_env(max_turns=5)
+        mock_orch = MagicMock()
+        mock_orch.close_async = AsyncMock(side_effect=Exception("conn error"))
+        env.orch = mock_orch
+
+        asyncio.run(env.close_async())
+        assert env.orch is None
+
+    def test_close_async_noop_without_orch(self):
+        """close_async should be a noop when orch is None."""
+        env = self._make_env(max_turns=5)
+        assert env.orch is None
+        asyncio.run(env.close_async())
+        assert env.orch is None
