@@ -296,7 +296,7 @@ BAD prompt:  "Find a designer in Mexico" (3 designers exist, verifier checks for
 FIX option 1: Make the prompt specific: "Find the designer in Mexico City who joined after 2023"
 FIX option 2: Make the verifier accept all valid answers: check that ANY designer in Mexico is returned
 
-Use `describe_db`/`query_db` to check the actual data before writing the prompt. If a query returns multiple rows, either narrow the prompt or widen the verifier.
+Use `describe_db`/`query_db` to check the actual data before writing the prompt. If a query returns multiple rows, either narrow the prompt or widen the verifier. Always verify your assumptions by querying — don't guess.
 
 ### Avoiding Overspecification
 A prompt is overspecified when it dictates HOW to accomplish the task rather than WHAT outcome is needed. This makes the task trivially easy (no learning signal) and doesn't test real problem-solving.
@@ -343,11 +343,16 @@ You can also call any of the environment's API tools listed above to see how the
 Calls the tool and returns its result. Use this to understand input/output formats.
 
 ### Workflow
-1. Call `describe_db` to see all tables and columns.
-2. Call `query_db` with SELECT queries to inspect real data (values, ranges, patterns).
-3. Optionally call environment tools to understand their behavior and edge cases.
-4. Use what you learned to design a realistic, data-grounded task.
-5. Output the task in the format below."""
+1. **Explore**: Call `describe_db` to see all tables and columns.
+2. **Inspect data**: Call `query_db` with SELECT queries to inspect real data (values, ranges, row counts, patterns).
+3. **Try tools**: Optionally call environment tools to understand their behavior, input/output formats, and edge cases.
+4. **Draft a task idea**: Think about what prompt + verifier you could write based on the data you've seen.
+5. **Validate your draft**: Before outputting the task, run `query_db` to verify your assumptions:
+   - Does the data your prompt references actually exist? (e.g., "Update Jamie's email" — is there a Jamie?)
+   - Will the verifier return 0.0 on a fresh DB? (Check seed state)
+   - Are there edge cases? (e.g., multiple matches, null values, empty tables)
+6. **Iterate**: If your queries reveal problems (wrong assumptions, ambiguous data, too many/few matches), revise your task idea and verify again. Do NOT output the task until you've confirmed the data supports it.
+7. **Output**: Only when confident, output the final task in the format below."""
             )
 
         # --- D. Output format ---
@@ -838,7 +843,10 @@ Generate exactly ONE task. Output it in this format:
         system_prompt = self._build_system_prompt()
 
         user_content = (
-            f"Explore the database and then generate a task for the {self.env_key} environment."
+            f"Generate a task for the {self.env_key} environment. "
+            "First explore the database to understand the data, then draft a prompt and verifier. "
+            "Before outputting, query the DB to verify your assumptions are correct — "
+            "iterate on your draft until you're confident the data supports it."
             if self.max_turns > 1
             else f"Generate a task for the {self.env_key} environment."
         )
