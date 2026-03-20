@@ -8,7 +8,7 @@ Shared scripts for Fleet GRPO training via SkyPilot. These replace the inline sh
 |--------|---------|
 | `fleet-common-setup.sh` | Env validation, Python venv, pip deps, OpenEnv, S3 dataset download, prepare_dataset |
 | `fleet-common-run.sh` | Ray cluster setup (multi-node), wandb login, training launch with common hydra overrides |
-| `fleet-qwen35-extra-setup.sh` | Qwen3.5-specific: transformers nightly, flash-attn wheel, CUDA toolkit, writes `$HOME/.cuda_env` |
+| `fleet-qwen35-extra-setup.sh` | Qwen3.5-specific: transformers 5.3.0, flash-attn wheel, CUDA toolkit, causal-conv1d rebuild, writes `$HOME/.cuda_env` |
 
 ## Usage
 
@@ -30,6 +30,34 @@ run: |
 
 Data root is auto-detected: `/workspace` if writable (RunPod), otherwise `$HOME` (GCP, Lambda, etc.). Override with `--data-root DIR`.
 
+### Custom environment (e.g., task-gen)
+
+For environments with a different entrypoint, env_class, or dataset preparation:
+
+```yaml
+setup: |
+  bash skyrl-train/scripts/fleet-common-setup.sh \
+    --openenv-branch deniz/db-query-tools \
+    --extra-setup skyrl-train/scripts/fleet-qwen35-extra-setup.sh \
+    --extra-pip supabase \
+    --skip-prepare
+
+  # Custom dataset preparation
+  cd skyrl-train && source .venv/bin/activate
+  python -m integrations.fleet.prepare_task_gen_dataset ...
+
+run: |
+  bash skyrl-train/scripts/fleet-common-run.sh \
+    --use-python-direct --cuda-env "$HOME/.cuda_env" \
+    --set-ulimit --no-pytorch-alloc-conf \
+    --entrypoint integrations.fleet.entrypoints.main_task_gen \
+    --env-class task_gen \
+    --data-dir-name task_gen -- \
+    trainer.policy.model.path="Qwen/Qwen3.5-9B" ...
+```
+
+Hydra overrides passed after `--` take precedence over common overrides (e.g., `generator.num_inference_engines=4` overrides the default `$TOTAL_GPUS`).
+
 ### Multi-node (e.g., 35B on 2 nodes)
 
 Set `num_nodes: 2` in the YAML. The run script auto-detects `SKYPILOT_NODE_RANK`:
@@ -44,8 +72,10 @@ No changes needed in the run block — multi-node works automatically.
 |------|---------|-------------|
 | `--openenv-branch BRANCH` | `deniz/fleet_client` | OpenEnv git ref to install |
 | `--extra-setup SCRIPT` | *(none)* | Script to source after `uv sync` (model-specific deps) |
+| `--extra-pip PACKAGES` | *(none)* | Additional pip packages to install before extra-setup |
 | `--data-root DIR` | auto-detect | Root for dataset download (`DIR/data/fleet/`). Uses `/workspace` if writable, else `$HOME` |
 | `--skip-uv-isolated` | `false` | Flag for configs that use `python` directly |
+| `--skip-prepare` | `false` | Skip default `prepare_dataset` step (for custom preparation logic) |
 
 ## Run Script Flags
 
@@ -58,18 +88,23 @@ No changes needed in the run block — multi-node works automatically.
 | `--set-ulimit` | `false` | Set `ulimit -n 65536` (needed for Ray+vLLM) |
 | `--no-pytorch-alloc-conf` | `false` | Skip setting `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
 | `--nccl-heartbeat SEC` | *(none)* | Set `TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC` (useful for multi-node) |
+| `--entrypoint MODULE` | `integrations.fleet.entrypoints.main_fleet` | Python module to run for training |
+| `--env-class CLASS` | `fleet_task` | Environment class name (e.g., `task_gen` for task generation) |
+| `--data-dir-name NAME` | `$MODALITY` | Data directory name under `data/fleet/` (e.g., `task_gen`) |
 | `--` | | Everything after this is passed as hydra overrides |
 
 ## Common Hydra Overrides (auto-injected by run script)
 
-These are always set by `fleet-common-run.sh` — don't repeat them in the YAML:
+These are always set by `fleet-common-run.sh` — don't repeat them in the YAML unless overriding:
 
-- `data.train_data`, `data.val_data` (from `--data-root`)
-- `environment.env_class=fleet_task`
-- `environment.skyrl_gym.fleet_task.tasks_file`
+- `data.train_data`, `data.val_data` (from `--data-root` + `--data-dir-name`)
+- `environment.env_class` (from `--env-class`, default: `fleet_task`)
+- `environment.skyrl_gym.fleet_task.tasks_file` (only when `--env-class fleet_task`)
 - `trainer.placement.colocate_all=true`, `trainer.strategy=fsdp2`
 - `trainer.placement.{policy,ref}_num_gpus_per_node`, `{policy,ref}_num_nodes`
 - `generator.num_inference_engines=$TOTAL_GPUS`
+
+Hydra overrides passed after `--` take precedence, so you can override any of these (e.g., `generator.num_inference_engines=4` for TP=2 configs).
 
 ## Environment Variables
 

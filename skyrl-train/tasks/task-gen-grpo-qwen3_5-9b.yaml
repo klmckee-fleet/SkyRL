@@ -85,136 +85,42 @@ envs:
   S3_TRAJECTORY_BUCKET: "skyrl-trajectories"
 
 setup: |
-  set -euo pipefail
-  cd skyrl-train
+  # Common setup: venv, deps, Qwen3.5 extras (transformers, flash-attn, CUDA, causal-conv1d)
+  # --extra-pip supabase: task-gen needs Supabase client for DB schema discovery
+  # --skip-prepare: task-gen uses prepare_task_gen_dataset (different from default prepare_dataset)
+  bash skyrl-train/scripts/fleet-common-setup.sh \
+    --openenv-branch deniz/db-query-tools \
+    --extra-setup skyrl-train/scripts/fleet-qwen35-extra-setup.sh \
+    --extra-pip supabase \
+    --skip-prepare
 
-  # Validate required environment variables
-  echo "Validating environment variables..."
-  if [ -z "$FLEET_API_KEY" ]; then echo "ERROR: FLEET_API_KEY is required"; exit 1; fi
-  if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then echo "ERROR: AWS credentials required for S3 dataset download"; exit 1; fi
-  echo "Environment validation passed"
-
-  uv venv --python 3.12 --seed --clear
-  source .venv/bin/activate
-  uv sync --extra vllm
-  # transformers 5.3.0: first stable with full qwen3_5 support
-  # Do NOT install from git main (renamed layer_type_validation, breaks vLLM 0.17)
-  uv pip install -U "transformers==5.3.0"
-  # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12.8 (community build)
-  uv pip install "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
-  python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
-  # FlashInfer JIT compilation requires CUDA toolkit (nvcc) for GatedDeltaNet kernels (Qwen3.5)
-  CUDA_HOME=""
-  for d in /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.6 /usr/local/cuda-12.4; do
-    if [ -x "$d/bin/nvcc" ]; then
-      CUDA_HOME="$d"
-      break
-    fi
-  done
-  if [ -z "$CUDA_HOME" ] && command -v nvcc &>/dev/null; then
-    NVCC_PATH=$(command -v nvcc)
-    CUDA_HOME=$(dirname "$(dirname "$NVCC_PATH")")
-  fi
-  if [ -z "$CUDA_HOME" ]; then
-    echo "nvcc not found on system. Installing CUDA toolkit from NVIDIA apt repo..."
-    apt-get update -qq
-    UBUNTU_VER=$(lsb_release -rs 2>/dev/null | tr -d '.' || echo "2204")
-    KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VER}/x86_64/cuda-keyring_1.1-1_all.deb"
-    echo "Installing CUDA keyring from $KEYRING_URL"
-    wget -qO /tmp/cuda-keyring.deb "$KEYRING_URL" 2>&1 || curl -sLo /tmp/cuda-keyring.deb "$KEYRING_URL"
-    file /tmp/cuda-keyring.deb
-    dpkg -i /tmp/cuda-keyring.deb
-    apt-get update -qq
-    apt-get install -y --no-install-recommends cuda-nvcc-12-8 libcublas-dev-12-8 cuda-nvrtc-dev-12-8
-    CUDA_HOME="/usr/local/cuda-12.8"
-  fi
-  export CUDA_HOME
-  export PATH="$CUDA_HOME/bin:$PATH"
-  echo "CUDA_HOME=$CUDA_HOME"
-  "$CUDA_HOME/bin/nvcc" --version
-  echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
-  echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
-  # Rebuild causal-conv1d with CUDA now that nvcc is available
-  # --no-deps prevents it from breaking torch/flash-attn during force-reinstall
-  CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall --no-deps "causal-conv1d==1.5.3.post1"
-  uv pip install wandb boto3 awscli supabase litellm
-
-  # Install OpenEnv (from branch with describe_db/query_db) for tool discovery and DB exploration
-  uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/db-query-tools" fleet-python logfire "mcp>=1.0.0"
-
-  # Re-install pinned packages LAST — uv pip install above can downgrade them via dependency resolution
-  pip install --force-reinstall --no-deps "transformers==5.3.0"
-  pip install --force-reinstall --no-deps "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
-  python -c "import transformers; assert transformers.__version__ == '5.3.0', f'Expected 5.3.0 got {transformers.__version__}'"
-  python -c "import flash_attn_2_cuda; print('flash_attn CUDA extension OK')"
-
-  # Download dataset from S3
-  mkdir -p $HOME/data/fleet
-  TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
-  S3_PATH="s3://${S3_DATASET_BUCKET}/${DATA_VERSION}/openenv/all_${MODALITY}.json"
-  echo "Downloading dataset from $S3_PATH..."
-  aws s3 cp "$S3_PATH" "$TASKS_FILE"
-  TASK_COUNT=$(python3 -c "import json; print(len(json.load(open('$TASKS_FILE'))['tasks']))")
-  echo "Downloaded $TASK_COUNT tasks for modality: $MODALITY"
-
-  # Prepare GRPO dataset (env contexts as prompts, tool discovery via Fleet, schema from Supabase/S3)
-  DATA_DIR="$HOME/data/fleet/task_gen"
-  TOOLS_CACHE="$HOME/data/fleet/tools_cache.json"
-  SCHEMA_CACHE="$HOME/data/fleet/schema_cache.json"
-  PREPARE_CMD="uv run python -m integrations.fleet.prepare_task_gen_dataset --tasks-json $TASKS_FILE --output-dir $DATA_DIR --mode grpo --tools-cache $TOOLS_CACHE --schema-cache $SCHEMA_CACHE"
+  # Task-gen dataset preparation (parquet with schema/tools context per environment)
+  cd skyrl-train && source .venv/bin/activate
+  DATA_ROOT="$([ -d /workspace ] && [ -w /workspace ] && echo /workspace || echo $HOME)"
+  TASKS_FILE="$DATA_ROOT/data/fleet/tasks_${MODALITY}.json"
+  DATA_DIR="$DATA_ROOT/data/fleet/task_gen"
+  PREPARE_CMD="python -m integrations.fleet.prepare_task_gen_dataset --tasks-json $TASKS_FILE --output-dir $DATA_DIR --mode grpo --tools-cache $DATA_ROOT/data/fleet/tools_cache.json --schema-cache $DATA_ROOT/data/fleet/schema_cache.json"
   [ -n "${MAX_TASKS:-}" ] && PREPARE_CMD="$PREPARE_CMD --max-tasks $MAX_TASKS"
   [ -n "${ENV_KEYS:-}" ] && PREPARE_CMD="$PREPARE_CMD --env-keys $ENV_KEYS"
   [ -n "${EVAL_RATIO:-}" ] && PREPARE_CMD="$PREPARE_CMD --eval-ratio $EVAL_RATIO"
   eval "$PREPARE_CMD"
 
 run: |
-  set -euo pipefail
-  cd skyrl-train
-  source .venv/bin/activate
-
-  TMP_DIR="$HOME/skyrl-tmp"
-  mkdir -p "$TMP_DIR"
-  export TMPDIR="$TMP_DIR"
-
-  # CUDA_HOME for FlashInfer JIT compilation (GatedDeltaNet kernels)
-  source "$HOME/.cuda_env" 2>/dev/null || true
-
-  # expandable_segments incompatible with vLLM memory pool in torch 2.10+
-
-  DATA_DIR="$HOME/data/fleet/task_gen"
-
-  # Login to Weights & Biases
-  python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
-
-  # Ray cluster setup
-  export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
-  export RAY_object_store_memory=10000000000
-  if ! ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
-    ray start --head --disable-usage-stats --port 6479 --object-store-memory=10000000000
-  fi
-
-  for i in $(seq 1 24); do
-    if ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then break; fi
-    sleep 5
-  done
-
-  TOTAL_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
-
-  # Run GRPO training with task-gen environment
-  # Use python directly since venv was set up with nightly overrides
-  # (uv run --isolated would re-resolve and conflict with nightly pins)
-  python -m integrations.fleet.entrypoints.main_task_gen \
-    data.train_data="['${DATA_DIR}/train.parquet']" \
-    data.val_data="['${DATA_DIR}/validation.parquet']" \
-    environment.env_class=task_gen \
+  # Task-gen GRPO training via shared run script
+  # --entrypoint: task-gen entrypoint (not main_fleet)
+  # --env-class: task_gen environment (not fleet_task)
+  # --data-dir-name: parquet files are in data/fleet/task_gen/ (not data/fleet/tool_use/)
+  # TP=2: 4 engines × 2 GPUs each (task-gen has smaller batches, needs more GPU memory for evaluator)
+  bash skyrl-train/scripts/fleet-common-run.sh \
+    --use-python-direct --cuda-env "$HOME/.cuda_env" \
+    --set-ulimit --no-pytorch-alloc-conf \
+    --entrypoint integrations.fleet.entrypoints.main_task_gen \
+    --env-class task_gen \
+    --data-dir-name task_gen -- \
     trainer.algorithm.advantage_estimator="grpo" \
     trainer.policy.model.path="Qwen/Qwen3.5-9B" \
-    trainer.placement.colocate_all=true \
-    trainer.strategy=fsdp2 \
     trainer.flash_attn=false \
     trainer.use_sample_packing=false \
-    trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
-    trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
     generator.num_inference_engines=4 \
     generator.inference_engine_tensor_parallel_size=2 \
     trainer.epochs=${NUM_EPOCHS} \
@@ -235,8 +141,8 @@ run: |
     generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
     generator.sampling_params.temperature=0.9 \
     generator.sampling_params.top_p=0.95 \
-    generator.sampling_params.stop='["</tool_call>", "</task>"]' \
-    generator.eval_sampling_params.stop='["</tool_call>", "</task>"]' \
+    'generator.sampling_params.stop=["</tool_call>", "</task>"]' \
+    'generator.eval_sampling_params.stop=["</tool_call>", "</task>"]' \
     trainer.policy.optimizer_config.lr=1.0e-6 \
     trainer.algorithm.use_kl_loss=true \
     generator.max_turns=$MAX_TURNS \
