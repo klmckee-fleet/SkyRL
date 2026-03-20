@@ -200,8 +200,13 @@ class TaskGenEnv(BaseTextEnv):
         api_tool_names = [t for t in self.env_tools if t != "computer"]
 
         if api_schemas:
+            # Compact format: name + description only (no parameter schemas)
+            # Full schemas make the prompt too long for envs with many tools
             for tool in api_schemas:
-                parts.append(self._format_tool_schema(tool))
+                func = tool.get("function", {})
+                name = func.get("name", "unknown")
+                desc = func.get("description", "")
+                parts.append(f"- **{name}**: {desc}")
         elif api_tool_names:
             parts.append("\n".join(f"- {t}" for t in api_tool_names))
         else:
