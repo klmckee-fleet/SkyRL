@@ -824,7 +824,9 @@ Generate exactly ONE task. Output it in this format:
                 if self.mcp_tools:
                     try:
                         tools_action = await self.mcp_tools.list_tools()
-                        mcp_tools = [t for t in tools_action.tools if "function" in t and t["function"].get("name") != "computer"]
+                        mcp_tools = [
+                            t for t in tools_action.tools if "function" in t and t["function"].get("name") != "computer"
+                        ]
                         mcp_tool_names = {t["function"]["name"] for t in mcp_tools}
                         self.callable_tools = set(_META_TOOLS) | mcp_tool_names
                         # Update tool schemas for system prompt if dataset didn't have them
