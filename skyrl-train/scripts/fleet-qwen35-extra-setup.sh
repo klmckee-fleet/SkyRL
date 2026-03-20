@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Qwen3.5-specific dependencies (sourced by fleet-common-setup.sh via --extra-setup)
 #
-# Installs: transformers upgrade, flash-attn 2.8.3 wheel, CUDA toolkit (nvcc)
+# Installs: transformers 5.3.0, flash-attn 2.8.3 wheel, CUDA toolkit (nvcc)
 # Writes: $HOME/.cuda_env (sourced at run time for FlashInfer JIT)
 
 # Upgrade transformers to 5.3.0 for Qwen3.5-MoE (model_type=qwen3_5_moe).
@@ -51,13 +51,6 @@ echo "CUDA_HOME=$CUDA_HOME"
 echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
 echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
 
-# Rebuild causal-conv1d with CUDA now that nvcc is available
-# (uv sync skips CUDA build via CAUSAL_CONV1D_SKIP_CUDA_BUILD; rebuild with proper CUDA)
-# --no-deps prevents it from breaking torch/flash-attn during force-reinstall
-# NOTE: must use pip (not uv pip) — uv pip --no-build-isolation silently skips CUDA extension builds
-CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall --no-deps "causal-conv1d==1.5.3.post1"
-
 # Verify pinned packages survived dependency resolution
 python -c "import transformers; assert transformers.__version__ == '5.3.0', f'Expected 5.3.0 got {transformers.__version__}'"
 python -c "import torch; import flash_attn_2_cuda; print('flash_attn CUDA extension OK')"
-python -c "import torch; import causal_conv1d_cuda; print('causal_conv1d CUDA extension OK')"
