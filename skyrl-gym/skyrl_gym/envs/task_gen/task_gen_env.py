@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 # Meta-tools the model can call to explore the seed database.
 _META_TOOLS = {"describe_db", "query_db"}
 
+# All callable tools = meta-tools + any MCP env tools discovered at init time.
+# Populated per-instance in init_async().
+
 
 class TaskGenEnv(BaseTextEnv):
     """Environment for RL-based task generation.
@@ -80,6 +83,10 @@ class TaskGenEnv(BaseTextEnv):
 
         # Fleet orchestrator for DB exploration (set in init_async)
         self.orch = None
+        # MCP tools client for calling env tools (set in init_async)
+        self.mcp_tools = None
+        # Set of all callable tool names (meta-tools + MCP tools)
+        self.callable_tools = set(_META_TOOLS)
 
         # Environment context from dataset (extras)
         self.env_key = extras.get("env_key", "unknown")
@@ -309,26 +316,33 @@ The verifier must check exactly what the prompt asks — no more, no less. Befor
 4. Could a different valid approach fool the verifier? (If so, fix the verifier to accept it)"""
         )
 
-        # --- C. Database exploration tools (multi-turn only) ---
+        # --- C. Exploration tools (multi-turn only) ---
         if self.max_turns > 1:
             parts.append(
                 """
-## Database Exploration Tools
+## Exploration Tools
 
-Before generating a task, explore the seed database to understand the actual data.
-Use these tools to inspect table schemas and query real rows:
+Before generating a task, explore the environment to understand the actual data and API behavior.
 
+### Database Tools
 <tool_call>{"name": "describe_db", "arguments": {}}</tool_call>
 Returns the full schema: table names, columns, types.
 
 <tool_call>{"name": "query_db", "arguments": {"sql": "SELECT * FROM table_name LIMIT 5"}}</tool_call>
 Runs a read-only SQL query against the seed database.
 
+### Environment Tools
+You can also call any of the environment's API tools listed above to see how they work:
+
+<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>
+Calls the tool and returns its result. Use this to understand input/output formats.
+
 ### Workflow
 1. Call `describe_db` to see all tables and columns.
 2. Call `query_db` with SELECT queries to inspect real data (values, ranges, patterns).
-3. Use what you learned to design a realistic, data-grounded task.
-4. Output the task in the format below."""
+3. Optionally call environment tools to understand their behavior and edge cases.
+4. Use what you learned to design a realistic, data-grounded task.
+5. Output the task in the format below."""
             )
 
         # --- D. Output format ---
@@ -673,10 +687,13 @@ Generate exactly ONE task. Output it in this format:
         if "<task>" in action:
             return await self._handle_task_generation(action)
 
-        # 2. Check for meta-tool call → execute via Fleet orchestrator
+        # 2. Check for tool call → execute via Fleet orchestrator or MCP
         tool_call = parse_tool_call(action)
-        if tool_call and tool_call["name"] in _META_TOOLS:
-            obs_content = await self._execute_meta_tool(tool_call)
+        if tool_call and tool_call["name"] in self.callable_tools:
+            if tool_call["name"] in _META_TOOLS:
+                obs_content = await self._execute_meta_tool(tool_call)
+            else:
+                obs_content = await self._execute_mcp_tool(tool_call)
 
             if max_turns_reached:
                 return BaseTextEnvStepOutput(
@@ -704,7 +721,7 @@ Generate exactly ONE task. Output it in this format:
             )
 
         nudge = (
-            "Use <tool_call> to explore the database, or generate a <task> block."
+            "Use <tool_call> to explore the database or call environment tools, then generate a <task> block."
             if self.max_turns > 1
             else "No <task> block found. Output your task in <task>...</task> format."
         )
@@ -741,6 +758,22 @@ Generate exactly ONE task. Output it in this format:
         except Exception as e:
             return f"Error: {e}"
 
+    async def _execute_mcp_tool(self, tool_call: Dict[str, Any]) -> str:
+        """Execute an MCP tool call via FleetMCPTools."""
+        name = tool_call["name"]
+        args = tool_call.get("arguments", {})
+
+        if self.mcp_tools is None:
+            return f"Error: MCP tools not available. Use describe_db/query_db or generate a <task>."
+
+        try:
+            result = await self.mcp_tools.call_tool(name, args)
+            if isinstance(result, dict):
+                return f"Tool result:\n{json.dumps(result, indent=2, default=str)}"
+            return f"Tool result:\n{result}"
+        except Exception as e:
+            return f"Error calling {name}: {e}"
+
     async def init_async(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """Initialize the environment, optionally provisioning a Fleet env for DB exploration.
 
@@ -751,13 +784,15 @@ Generate exactly ONE task. Output it in this format:
         """
         self.turns = 0
         self.orch = None
+        self.mcp_tools = None
+        self.callable_tools = set(_META_TOOLS)
 
-        # Provision Fleet env for multi-turn DB exploration
+        # Provision Fleet env for multi-turn exploration (DB + MCP tools)
         if self.max_turns > 1 and self.fleet_api_key and self.data_key:
             try:
                 from envs.fleet_env import FleetEnvClient
 
-                self.orch, _ = await FleetEnvClient.from_fleet_async(
+                self.orch, self.mcp_tools = await FleetEnvClient.from_fleet_async(
                     api_key=self.fleet_api_key,
                     env_key=self.env_key,
                     data_key=self.data_key,
@@ -765,7 +800,21 @@ Generate exactly ONE task. Output it in this format:
                     image_type="standard",
                     ttl_seconds=900,
                 )
-                logger.info(f"TaskGenEnv [{self.env_key}]: Fleet env provisioned for DB exploration")
+                # Load instance resources so db("seed") works
+                await asyncio.to_thread(self.orch._fleet_env.instance.load)
+                logger.info(f"TaskGenEnv [{self.env_key}]: Fleet env provisioned for DB + tool exploration")
+
+                # Discover MCP tools so the model can call them
+                if self.mcp_tools:
+                    try:
+                        tools_action = await self.mcp_tools.list_tools()
+                        mcp_tool_names = {t["function"]["name"] for t in tools_action.tools if "function" in t}
+                        # Exclude "computer" (CUA-only) from callable tools
+                        mcp_tool_names.discard("computer")
+                        self.callable_tools = set(_META_TOOLS) | mcp_tool_names
+                        logger.info(f"TaskGenEnv [{self.env_key}]: {len(mcp_tool_names)} MCP tools available")
+                    except Exception as e:
+                        logger.warning(f"TaskGenEnv [{self.env_key}]: Failed to list MCP tools: {e}")
             except Exception as e:
                 logger.warning(
                     f"TaskGenEnv [{self.env_key}]: Fleet provisioning failed, " f"falling back to single-turn: {e}"
