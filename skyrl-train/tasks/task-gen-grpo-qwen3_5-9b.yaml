@@ -137,7 +137,7 @@ setup: |
   # Rebuild causal-conv1d with CUDA now that nvcc is available
   # (uv sync skips CUDA build via CAUSAL_CONV1D_SKIP_CUDA_BUILD; rebuild here with proper CUDA)
   CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall "causal-conv1d==1.5.3.post1"
-  uv pip install wandb boto3 awscli supabase
+  uv pip install wandb boto3 awscli supabase litellm
 
   # Install OpenEnv (from branch with describe_db/query_db) for tool discovery and DB exploration
   uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/db-query-tools" fleet-python logfire "mcp>=1.0.0"
