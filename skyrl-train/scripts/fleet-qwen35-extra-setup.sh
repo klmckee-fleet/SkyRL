@@ -60,4 +60,4 @@ CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no
 # Verify pinned packages survived dependency resolution
 python -c "import transformers; assert transformers.__version__ == '5.3.0', f'Expected 5.3.0 got {transformers.__version__}'"
 python -c "import torch; import flash_attn_2_cuda; print('flash_attn CUDA extension OK')"
-python -c "import causal_conv1d_cuda; print('causal_conv1d CUDA extension OK')"
+python -c "import torch; import causal_conv1d_cuda; print('causal_conv1d CUDA extension OK')"
