@@ -209,8 +209,8 @@ run: |
     trainer.use_sample_packing=false \
     trainer.placement.policy_num_gpus_per_node=$TOTAL_GPUS \
     trainer.placement.ref_num_gpus_per_node=$TOTAL_GPUS \
-    generator.num_inference_engines=$TOTAL_GPUS \
-    generator.inference_engine_tensor_parallel_size=1 \
+    generator.num_inference_engines=4 \
+    generator.inference_engine_tensor_parallel_size=2 \
     trainer.epochs=${NUM_EPOCHS} \
     trainer.eval_batch_size=4 \
     trainer.eval_before_train=false \
@@ -243,7 +243,7 @@ run: |
     generator.use_conversation_multi_turn=true \
     generator.n_samples_per_prompt=4 \
     generator.eval_n_samples_per_prompt=3 \
-    generator.gpu_memory_utilization=0.8 \
+    generator.gpu_memory_utilization=0.15 \
     trainer.logger="$LOGGER" \
     trainer.project_name="task-gen-grpo" \
     trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
