@@ -142,6 +142,12 @@ setup: |
   # Install OpenEnv (from branch with describe_db/query_db) for tool discovery and DB exploration
   uv pip install "git+https://github.com/fleet-ai/OpenEnv.git@deniz/db-query-tools" fleet-python logfire "mcp>=1.0.0"
 
+  # Re-install pinned packages LAST — uv pip install above can downgrade them via dependency resolution
+  pip install --force-reinstall --no-deps "transformers==5.3.0"
+  pip install --force-reinstall --no-deps "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+  python -c "import transformers; assert transformers.__version__ == '5.3.0', f'Expected 5.3.0 got {transformers.__version__}'"
+  python -c "import flash_attn_2_cuda; print('flash_attn CUDA extension OK')"
+
   # Download dataset from S3
   mkdir -p $HOME/data/fleet
   TASKS_FILE="$HOME/data/fleet/tasks_${MODALITY}.json"
