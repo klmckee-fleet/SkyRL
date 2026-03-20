@@ -804,10 +804,13 @@ Generate exactly ONE task. Output it in this format:
                 if self.mcp_tools:
                     try:
                         tools_action = await self.mcp_tools.list_tools()
-                        mcp_tool_names = {t["function"]["name"] for t in tools_action.tools if "function" in t}
-                        # Exclude "computer" (CUA-only) from callable tools
-                        mcp_tool_names.discard("computer")
+                        mcp_tools = [t for t in tools_action.tools if "function" in t and t["function"].get("name") != "computer"]
+                        mcp_tool_names = {t["function"]["name"] for t in mcp_tools}
                         self.callable_tools = set(_META_TOOLS) | mcp_tool_names
+                        # Update tool schemas for system prompt if dataset didn't have them
+                        if not self.env_tools_schema:
+                            self.env_tools_schema = mcp_tools
+                            self.env_tools = [t["function"]["name"] for t in mcp_tools]
                         logger.info(f"TaskGenEnv [{self.env_key}]: {len(mcp_tool_names)} MCP tools available")
                     except Exception as e:
                         logger.warning(f"TaskGenEnv [{self.env_key}]: Failed to list MCP tools: {e}")
