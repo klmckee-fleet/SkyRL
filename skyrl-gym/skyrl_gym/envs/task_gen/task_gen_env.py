@@ -645,29 +645,18 @@ Generate exactly ONE task. Output it in this format:
             metadata["reward_breakdown"] = {"sandbox": 1.0, "judge": 0.0, "total": 0.0}
             return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
 
-        # 4. Hint-based evaluation (k raw + k hinted rollouts)
-        eval_result = await self._evaluate_task(prompt, verifier)
-
-        # 5. R = validity * (base_reward + alpha * var(raw) + (p_hint - p_raw))
-        # base_reward (0.3) ensures tasks that pass sandbox+judge get gradient signal
-        # even when evaluator rollouts fail (no agent to drive tool calls yet).
-        # Evaluator bonus (var + hint_gap) adds signal for difficulty calibration
-        # once evaluator rollouts are driven by a real agent.
+        # 4. Reward: sandbox + judge are the primary signals for now.
+        # Evaluator rollouts (k raw + k hinted via FleetTaskEnv) are skipped
+        # because they require a real agent to drive tool calls — without one,
+        # they always return 0 and waste ~35s per eval on Fleet instance creation.
+        # TODO: re-enable evaluator once harness-based rollouts are implemented.
         base_reward = 0.3
-        var_raw = eval_result["var_raw"]
-        hint_gap = eval_result["hint_gap"]
-        evaluator_bonus = self.alpha * var_raw + hint_gap
-        reward = judge_gate * (base_reward + evaluator_bonus)
+        reward = judge_gate * base_reward
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
             "judge": judge_gate,
             "base_reward": base_reward,
-            "var_raw": var_raw,
-            "hint_gap": hint_gap,
-            "p_raw": eval_result["p_raw"],
-            "p_hint": eval_result["p_hint"],
-            "alpha": self.alpha,
             "total": reward,
         }
 
