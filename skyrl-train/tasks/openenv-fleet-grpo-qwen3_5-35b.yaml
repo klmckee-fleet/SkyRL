@@ -48,7 +48,7 @@ num_nodes: 2
 
 workdir:
   url: https://github.com/fleet-ai/SkyRL.git
-  ref: main
+  ref: deniz/hint-augmentation
 
 envs:
   WANDB_API_KEY: ""
