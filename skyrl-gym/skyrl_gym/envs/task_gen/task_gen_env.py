@@ -796,7 +796,8 @@ Generate exactly ONE task. Output it in this format:
                     ttl_seconds=900,
                 )
                 # Load instance resources so db("seed") works
-                await asyncio.to_thread(self.orch._fleet_env.instance.load)
+                # instance.load() is async — must await directly, not via to_thread
+                await self.orch._fleet_env.instance.load()
                 logger.info(f"TaskGenEnv [{self.env_key}]: Fleet env provisioned for DB + tool exploration")
 
                 # Discover MCP tools so the model can call them
