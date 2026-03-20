@@ -493,11 +493,10 @@ Generate exactly ONE task. Output it in this format:
 
         try:
             obs = await env.reset_async()
-            done = False
-            while not done:
-                # Simple evaluator policy: submit empty action to let verifier run
-                # The FleetTaskEnv handles tool execution internally
-                obs, reward, done, info = await env.step_async("")
+            # Immediately signal done to trigger verifier execution.
+            # Without a real agent driving tool calls, we just test if the
+            # verifier runs and what its baseline score is.
+            obs, reward, done, info = await env.step_async({"done": True})
             score = float(reward) if reward else 0.0
             return (
                 score,
@@ -649,14 +648,21 @@ Generate exactly ONE task. Output it in this format:
         # 4. Hint-based evaluation (k raw + k hinted rollouts)
         eval_result = await self._evaluate_task(prompt, verifier)
 
-        # 5. R = validity * (alpha * var(raw) + (p_hint - p_raw))
+        # 5. R = validity * (base_reward + alpha * var(raw) + (p_hint - p_raw))
+        # base_reward (0.3) ensures tasks that pass sandbox+judge get gradient signal
+        # even when evaluator rollouts fail (no agent to drive tool calls yet).
+        # Evaluator bonus (var + hint_gap) adds signal for difficulty calibration
+        # once evaluator rollouts are driven by a real agent.
+        base_reward = 0.3
         var_raw = eval_result["var_raw"]
         hint_gap = eval_result["hint_gap"]
-        reward = judge_gate * (self.alpha * var_raw + hint_gap)
+        evaluator_bonus = self.alpha * var_raw + hint_gap
+        reward = judge_gate * (base_reward + evaluator_bonus)
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
             "judge": judge_gate,
+            "base_reward": base_reward,
             "var_raw": var_raw,
             "hint_gap": hint_gap,
             "p_raw": eval_result["p_raw"],
