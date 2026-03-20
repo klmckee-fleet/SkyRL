@@ -10,8 +10,8 @@ import importlib.util
 import json
 import os
 import tempfile
-from typing import Any, Dict, List
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any, Dict
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

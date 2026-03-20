@@ -15,7 +15,7 @@ Components:
     - alpha: Weight balancing variance (frontier difficulty) vs hint gap (learnability).
 """
 
-from typing import Any, Dict, List
+from typing import Dict, List
 
 
 def compute_variance(scores: List[float]) -> float:

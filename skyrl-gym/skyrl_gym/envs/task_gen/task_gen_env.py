@@ -779,7 +779,7 @@ Generate exactly ONE task. Output it in this format:
         args = tool_call.get("arguments", {})
 
         if self.mcp_tools is None:
-            return f"Error: MCP tools not available. Use describe_db/query_db or generate a <task>."
+            return "Error: MCP tools not available. Use describe_db/query_db or generate a <task>."
 
         try:
             result = await self.mcp_tools.call_tool(name, args)
