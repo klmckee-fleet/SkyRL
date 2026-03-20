@@ -54,8 +54,10 @@ echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
 # Rebuild causal-conv1d with CUDA now that nvcc is available
 # (uv sync skips CUDA build via CAUSAL_CONV1D_SKIP_CUDA_BUILD; rebuild with proper CUDA)
 # --no-deps prevents it from breaking torch/flash-attn during force-reinstall
-CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" uv pip install --no-build-isolation --force-reinstall --no-deps "causal-conv1d==1.5.3.post1"
+# NOTE: must use pip (not uv pip) — uv pip --no-build-isolation silently skips CUDA extension builds
+CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall --no-deps "causal-conv1d==1.5.3.post1"
 
 # Verify pinned packages survived dependency resolution
 python -c "import transformers; assert transformers.__version__ == '5.3.0', f'Expected 5.3.0 got {transformers.__version__}'"
 python -c "import torch; import flash_attn_2_cuda; print('flash_attn CUDA extension OK')"
+python -c "import causal_conv1d_cuda; print('causal_conv1d CUDA extension OK')"
