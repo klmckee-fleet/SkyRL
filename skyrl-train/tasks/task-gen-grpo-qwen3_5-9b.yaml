@@ -61,7 +61,7 @@ envs:
   MODALITY: "tool_use"
   # Multi-turn: exploration + generation (DB queries + tool calls + task)
   MAX_TURNS: 10
-  MAX_INPUT_LENGTH: 8192
+  MAX_INPUT_LENGTH: 64000
   MAX_GENERATE_LENGTH: 8192
   NUM_EPOCHS: 20
   RUN_ID: ""

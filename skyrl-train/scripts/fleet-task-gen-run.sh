@@ -40,7 +40,7 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   trainer.micro_train_batch_size_per_gpu=1 \
   trainer.loss_chunk_size=4096 \
   trainer.ckpt_interval=10 \
-  trainer.max_prompt_length=$MAX_INPUT_LENGTH \
+  trainer.max_prompt_length=4096 \
   generator.max_input_length=$MAX_INPUT_LENGTH \
   generator.sampling_params.max_generate_length=$MAX_GENERATE_LENGTH \
   generator.sampling_params.temperature=0.9 \
