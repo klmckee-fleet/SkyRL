@@ -135,8 +135,8 @@ setup: |
   echo "export CUDA_HOME=$CUDA_HOME" > "$HOME/.cuda_env"
   echo "export PATH=$CUDA_HOME/bin:\$PATH" >> "$HOME/.cuda_env"
   # Rebuild causal-conv1d with CUDA now that nvcc is available
-  # (uv sync skips CUDA build via CAUSAL_CONV1D_SKIP_CUDA_BUILD; rebuild here with proper CUDA)
-  CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall "causal-conv1d==1.5.3.post1"
+  # --no-deps prevents it from breaking torch/flash-attn during force-reinstall
+  CAUSAL_CONV1D_FORCE_BUILD=TRUE CAUSAL_CONV1D_SKIP_CUDA_BUILD="" pip install --no-build-isolation --force-reinstall --no-deps "causal-conv1d==1.5.3.post1"
   uv pip install wandb boto3 awscli supabase litellm
 
   # Install OpenEnv (from branch with describe_db/query_db) for tool discovery and DB exploration
