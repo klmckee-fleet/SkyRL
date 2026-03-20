@@ -277,15 +277,9 @@ class RayPPOTrainer:
 
                     # 2. print example just for debugging
                     vis = self.tokenizer.decode(generator_output["response_ids"][0])
-                    # Use actual prompt sent to model (from prompt_ids) rather than
-                    # the raw dataset prompt which may have placeholder content
-                    actual_prompt = self.tokenizer.decode(generator_output["prompt_ids"][0], skip_special_tokens=False)
-                    # Truncate long system prompts for readability (keep last 500 chars)
-                    if len(actual_prompt) > 1000:
-                        actual_prompt = f"...{actual_prompt[-500:]}"
                     log_example(
                         logger,
-                        prompt=actual_prompt,
+                        prompt=generator_input["prompts"][0],
                         response=vis,
                         reward=generator_output["rewards"][0],
                     )
