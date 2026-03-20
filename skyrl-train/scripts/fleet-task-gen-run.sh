@@ -28,14 +28,14 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   generator.num_inference_engines=4 \
   generator.inference_engine_tensor_parallel_size=2 \
   trainer.epochs=${NUM_EPOCHS} \
-  trainer.eval_batch_size=4 \
+  trainer.eval_batch_size=12 \
   trainer.eval_before_train=false \
   trainer.eval_interval=20 \
   trainer.update_epochs_per_batch=1 \
-  trainer.train_batch_size=4 \
+  trainer.train_batch_size=12 \
   trainer.use_hybrid_env_sampling=true \
   trainer.min_samples_per_env=1 \
-  trainer.policy_mini_batch_size=4 \
+  trainer.policy_mini_batch_size=12 \
   trainer.micro_forward_batch_size_per_gpu=1 \
   trainer.micro_train_batch_size_per_gpu=1 \
   trainer.loss_chunk_size=4096 \
