@@ -615,20 +615,32 @@ Generate exactly ONE task. Output it in this format:
         """Evaluate a generated task through the full pipeline.
 
         Pipeline:
-            1. Parse <task> output -> fail = reward 0
-            2. Sandbox validation -> fail = reward 0
-            3. LLM-as-a-judge -> gate (0/1), fail = reward 0
+            1. Parse <task> output -> fail = exploration_bonus only
+            2. Sandbox validation -> fail = exploration_bonus only
+            3. LLM-as-a-judge -> gate (0/1), fail = exploration_bonus only
             4. Hint-based evaluation: k raw + k hinted rollouts via FleetTaskEnv
-            5. R = validity * (alpha * var(raw) + (p_hint - p_raw))
+            5. R = judge_gate * (base + alpha * var(raw) + hint_gap) + exploration_bonus
+
+        exploration_bonus = min(0.05 * meta_tool_calls + 0.02 * mcp_tool_calls, 0.15)
+        Applied to ALL paths so tool use is always rewarded regardless of task quality.
         """
         metadata: Dict[str, Any] = {"env_key": self.env_key, "turn": self.turns}
+
+        # Exploration bonus: always reward tool use regardless of task outcome.
+        # Prevents collapse to zero-exploration hallucination strategy.
+        exploration_bonus = min(0.05 * self.meta_tool_calls + 0.02 * self.mcp_tool_calls, 0.15)
 
         # 1. Parse
         parsed = parse_task_output(action)
         if parsed is None:
             metadata["error"] = "parse_failed"
-            metadata["reward_breakdown"] = {"total": 0.0}
-            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
+            metadata["reward_breakdown"] = {
+                "exploration_bonus": exploration_bonus,
+                "meta_tool_calls": self.meta_tool_calls,
+                "mcp_tool_calls": self.mcp_tool_calls,
+                "total": exploration_bonus,
+            }
+            return BaseTextEnvStepOutput(observations=[], reward=exploration_bonus, done=True, metadata=metadata)
 
         prompt = parsed["prompt"]
         verifier = parsed["verifier"]
@@ -644,16 +656,29 @@ Generate exactly ONE task. Output it in this format:
             "error": validation.error,
         }
         if not validation.valid:
-            metadata["reward_breakdown"] = {"sandbox": 0.0, "total": 0.0}
-            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
+            metadata["reward_breakdown"] = {
+                "sandbox": 0.0,
+                "exploration_bonus": exploration_bonus,
+                "meta_tool_calls": self.meta_tool_calls,
+                "mcp_tool_calls": self.mcp_tool_calls,
+                "total": exploration_bonus,
+            }
+            return BaseTextEnvStepOutput(observations=[], reward=exploration_bonus, done=True, metadata=metadata)
 
         # 3. LLM-as-a-judge gate
         judge_gate = self._judge_task(prompt, verifier)
         metadata["judge_gate"] = judge_gate
 
         if judge_gate == 0.0:
-            metadata["reward_breakdown"] = {"sandbox": 1.0, "judge": 0.0, "total": 0.0}
-            return BaseTextEnvStepOutput(observations=[], reward=0.0, done=True, metadata=metadata)
+            metadata["reward_breakdown"] = {
+                "sandbox": 1.0,
+                "judge": 0.0,
+                "exploration_bonus": exploration_bonus,
+                "meta_tool_calls": self.meta_tool_calls,
+                "mcp_tool_calls": self.mcp_tool_calls,
+                "total": exploration_bonus,
+            }
+            return BaseTextEnvStepOutput(observations=[], reward=exploration_bonus, done=True, metadata=metadata)
 
         # 4. Hint-based evaluation (k raw + k hinted rollouts)
         eval_result = await self._evaluate_task(prompt, verifier)
@@ -666,7 +691,8 @@ Generate exactly ONE task. Output it in this format:
         var_raw = eval_result["var_raw"]
         hint_gap = eval_result["hint_gap"]
         evaluator_bonus = self.alpha * var_raw + hint_gap
-        reward = judge_gate * (base_reward + evaluator_bonus)
+
+        reward = judge_gate * (base_reward + evaluator_bonus) + exploration_bonus
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
@@ -677,6 +703,9 @@ Generate exactly ONE task. Output it in this format:
             "p_raw": eval_result["p_raw"],
             "p_hint": eval_result["p_hint"],
             "alpha": self.alpha,
+            "exploration_bonus": exploration_bonus,
+            "meta_tool_calls": self.meta_tool_calls,
+            "mcp_tool_calls": self.mcp_tool_calls,
             "total": reward,
         }
 
@@ -706,8 +735,10 @@ Generate exactly ONE task. Output it in this format:
         tool_call = parse_tool_call(action)
         if tool_call and tool_call["name"] in self.callable_tools:
             if tool_call["name"] in _META_TOOLS:
+                self.meta_tool_calls += 1
                 obs_content = await self._execute_meta_tool(tool_call)
             else:
+                self.mcp_tool_calls += 1
                 obs_content = await self._execute_mcp_tool(tool_call)
 
             if max_turns_reached:
@@ -728,11 +759,19 @@ Generate exactly ONE task. Output it in this format:
 
         # 3. Neither task nor tool call → nudge
         if max_turns_reached:
+            exploration_bonus = min(0.05 * self.meta_tool_calls + 0.02 * self.mcp_tool_calls, 0.15)
             return BaseTextEnvStepOutput(
                 observations=[],
-                reward=0.0,
+                reward=exploration_bonus,
                 done=True,
-                metadata={"env_key": self.env_key, "turn": self.turns, "done_reason": "max_turns"},
+                metadata={
+                    "env_key": self.env_key,
+                    "turn": self.turns,
+                    "done_reason": "max_turns",
+                    "exploration_bonus": exploration_bonus,
+                    "meta_tool_calls": self.meta_tool_calls,
+                    "mcp_tool_calls": self.mcp_tool_calls,
+                },
             )
 
         nudge = (
@@ -798,6 +837,8 @@ Generate exactly ONE task. Output it in this format:
         Falls back to single-turn if provisioning fails.
         """
         self.turns = 0
+        self.meta_tool_calls = 0
+        self.mcp_tool_calls = 0
         self.orch = None
         self.mcp_tools = None
         self.callable_tools = set(_META_TOOLS)
