@@ -66,7 +66,7 @@ envs:
   NUM_EPOCHS: 20
   RUN_ID: ""
   MAX_TASKS: ""
-  ENV_KEYS: ""
+  ENV_KEYS: "booking,budget,carlisle,forums-homes,outlook,reddit,rops-mail,ticketmaster,wallst,zillow"
   EVAL_RATIO: "0.005"
   # Evaluator config (hint-based: k raw + k hinted rollouts via FleetTaskEnv)
   JUDGE_MODEL: "anthropic/claude-sonnet-4-6"
