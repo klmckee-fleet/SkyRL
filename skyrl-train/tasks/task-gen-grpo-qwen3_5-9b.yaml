@@ -57,7 +57,7 @@ envs:
   OPENROUTER_API_KEY: ""
   LOGGER: "wandb"
   INFERENCE_BACKEND: "vllm"
-  DATA_VERSION: "v4"
+  DATA_VERSION: "v55"
   MODALITY: "tool_use"
   # Multi-turn: exploration + generation (DB queries + tool calls + task)
   MAX_TURNS: 10

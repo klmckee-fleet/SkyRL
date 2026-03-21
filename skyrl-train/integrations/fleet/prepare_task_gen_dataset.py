@@ -165,6 +165,7 @@ async def _discover_env_tools_async(
         env_key=env_key,
         data_key=data_key,
         data_version=data_version,
+        image_type="standard",
         ttl_seconds=ttl_seconds,
     )
     try:
