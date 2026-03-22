@@ -307,12 +307,15 @@ env.instance.load()              # Load current state (call first)
 seed = env.db("seed")            # Original DB before agent acted
 current = env.db("current")      # Current DB after agent acted
 
-# Query tables:
-rows = current.table("table_name").eq("column", value).all()
-row = current.table("table_name").eq("column", value).first()
-rows = current.table("table_name").neq("column", value).all()
-count = current.table("table_name").eq("column", value).count()
-rows = current.table("table_name").select("col1", "col2").all()
+# Query tables — ALL results are Python dicts, use row["column"] NOT row.column:
+rows = current.table("table_name").eq("column", value).all()   # -> List[dict]
+row = current.table("table_name").eq("column", value).first()  # -> dict or None
+rows = current.table("table_name").neq("column", value).all()  # -> List[dict]
+count = current.table("table_name").eq("column", value).count() # -> int
+rows = current.table("table_name").select("col1", "col2").all() # -> List[dict]
+# Access fields: row["id"], row["name"], row["email"] — NEVER row.id or row.name
+# Only methods: .table(), .eq(), .neq(), .select(), .all(), .first(), .count()
+# NO .like(), .gt(), .lt(), .contains(), .in_() — use Python filtering instead
 
 # Compare seed vs current to detect NEW entries:
 def find_new_entries(seed, current, table_name, id_field="id", filter_conditions=None):
@@ -394,6 +397,8 @@ def validate_task(env: Environment, final_answer: str | None = None) -> int:
 ### Rules
 - **NEVER hardcode database IDs** (user_id, hotel_id, etc.) — always query the DB to find them
 - **NEVER use `env.env_variables`** — it is not available at runtime. Embed env var values as string constants at the top of your verifier (e.g., `LOGGED_IN_USER = "riley3318"`)
+- **DB rows are dicts** — use `row["id"]`, `row["name"]`, NOT `row.id`, `row.name`. Using dot notation will crash with `AttributeError: 'dict' object has no attribute 'id'`
+- **Only use supported query methods**: `.eq()`, `.neq()`, `.select()`, `.all()`, `.first()`, `.count()`. NO `.like()`, `.gt()`, `.lt()`, `.contains()`, `.in_()` — filter in Python instead (e.g., `[r for r in rows if "tech" in r["name"].lower()]`)
 - **Use timezone-tolerant comparisons** for datetimes — the DB may store `"2025-08-08T14:00:00Z"` while you expect `"2025-08-08T14:00:00"`. Use `.startswith()` or strip the trailing `"Z"` before comparing
 - Use `find_new_entries()` to detect rows the agent created (compares seed vs current)
 - Look up the logged-in user by name/email from the users table, don't assume an ID
@@ -639,10 +644,26 @@ Generate exactly ONE task. Output it in this format:
                     elif session.verifier_execution.success:
                         score = 1.0
                     stdout = getattr(session.verifier_execution, "stdout", None)
-                    # Capture error/stderr for hint building when verifiers crash
-                    error = getattr(session.verifier_execution, "stderr", None)
-                    if not error:
-                        error = getattr(session.verifier_execution, "error", None)
+                    # Capture error from verifier crashes — error is nested in result.error
+                    ve_result = getattr(session.verifier_execution, "result", None)
+                    if ve_result:
+                        ve_error = (
+                            ve_result.get("error") if isinstance(ve_result, dict) else getattr(ve_result, "error", None)
+                        )
+                        if ve_error:
+                            error = (
+                                ve_error.get("message", "")
+                                if isinstance(ve_error, dict)
+                                else getattr(ve_error, "message", "")
+                            )
+                            traceback_str = (
+                                ve_error.get("traceback", "")
+                                if isinstance(ve_error, dict)
+                                else getattr(ve_error, "traceback", "")
+                            )
+                            if traceback_str:
+                                # Extract just the last line of traceback (the actual error)
+                                error = traceback_str.strip().split("\n")[-1] if traceback_str else error
                 results.append((score, stdout, error))
         return results
 
