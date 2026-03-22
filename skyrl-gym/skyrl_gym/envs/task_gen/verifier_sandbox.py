@@ -66,7 +66,7 @@ BLOCKED_BUILTINS = {
 
 # Min/max AST node count for verifier complexity
 MIN_AST_NODES = 5  # reject trivial verifiers like `return 1.0`
-MAX_AST_NODES = 300  # reject overly complex verifiers
+MAX_AST_NODES = 500  # reject overly complex verifiers
 
 
 class VerifierSandbox:
@@ -148,31 +148,27 @@ class VerifierSandbox:
             return None
 
     def _check_signature(self, tree: ast.AST, result: ValidationResult):
-        """Check that verifier defines `async def verify(env, ...)`."""
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "verify":
-                args = node.args
-                # Must have at least 'env' parameter
-                arg_names = [a.arg for a in args.args]
-                if "env" in arg_names:
-                    result.checks_passed.append("signature")
-                    return
-                else:
-                    result.checks_failed.append("signature")
-                    result.error = f"verify() must have 'env' parameter, got: {arg_names}"
-                    return
+        """Check that verifier defines a valid function with env parameter.
 
-        # No async def verify found - also accept sync def verify
+        Accepts both `verify(env, ...)` and `validate_task(env, ...)` names,
+        both sync and async.
+        """
+        valid_names = {"verify", "validate_task"}
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "verify":
-                args = node.args
-                arg_names = [a.arg for a in args.args]
-                if "env" in arg_names:
-                    result.checks_passed.append("signature")
-                    return
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                if node.name in valid_names:
+                    args = node.args
+                    arg_names = [a.arg for a in args.args]
+                    if "env" in arg_names:
+                        result.checks_passed.append("signature")
+                        return
+                    else:
+                        result.checks_failed.append("signature")
+                        result.error = f"{node.name}() must have 'env' parameter, got: {arg_names}"
+                        return
 
         result.checks_failed.append("signature")
-        result.error = "No verify(env, ...) function found"
+        result.error = "No verify(env, ...) or validate_task(env, ...) function found"
 
     def _check_complexity(self, tree: ast.AST, result: ValidationResult):
         """Check AST node count is within bounds."""
@@ -240,10 +236,11 @@ class VerifierSandbox:
 
     def _check_hardcoded_returns(self, tree: ast.AST, result: ValidationResult):
         """Check that verifier isn't just `return 1.0` or `return 0.0`."""
+        valid_names = {"verify", "validate_task"}
         verify_func = None
         for node in ast.walk(tree):
             if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
-                if node.name == "verify":
+                if node.name in valid_names:
                     verify_func = node
                     break
 

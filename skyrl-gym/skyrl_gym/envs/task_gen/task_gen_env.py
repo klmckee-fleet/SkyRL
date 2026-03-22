@@ -292,7 +292,9 @@ val = env.env_variables["{example_key}"]"""
 
 The verifier checks whether the agent completed the task by inspecting database state changes.
 
-Signature: `def verify(env, final_answer=None) -> float` returning 1.0 (pass) or 0.0 (fail).
+Signature: `def validate_task(env: Environment, final_answer: str | None = None) -> int`
+
+**IMPORTANT**: The function MUST be named `validate_task` and return `TASK_FAILED_SCORE` (0) or `TASK_SUCCESSFUL_SCORE` (1).
 
 ### Verifier API
 ```python
@@ -302,20 +304,95 @@ current = env.db("current")      # Current DB after agent acted
 
 # Query tables:
 rows = current.table("table_name").eq("column", value).all()
+row = current.table("table_name").eq("column", value).first()
 rows = current.table("table_name").neq("column", value).all()
 count = current.table("table_name").eq("column", value).count()
+rows = current.table("table_name").select("col1", "col2").all()
 
-# Compare seed vs current to detect state changes:
-seed_rows = seed.table("table_name").all()
-current_rows = current.table("table_name").all()
-new_rows = [r for r in current_rows if r not in seed_rows]{env_var_api}
+# Compare seed vs current to detect NEW entries:
+def find_new_entries(seed, current, table_name, id_field="id", filter_conditions=None):
+    before_query = seed.table(table_name)
+    after_query = current.table(table_name)
+    if filter_conditions:
+        for key, value in filter_conditions.items():
+            before_query = before_query.eq(key, value)
+            after_query = after_query.eq(key, value)
+    before_ids = {{entry[id_field] for entry in before_query.select(id_field).all()}}
+    return [e for e in after_query.all() if e[id_field] not in before_ids]{env_var_api}
+```
+
+### Error Tracking (REQUIRED)
+Every verifier MUST track errors and successes using accumulator lists, and print them
+before returning. This enables automated feedback for hint-based evaluation.
+
+```python
+error_accumulator = []
+success_accumulator = []
+
+# ... check conditions ...
+if condition_met:
+    success_accumulator.append("[C] Booking was created")
+else:
+    error_accumulator.append("[X] Expected booking not found")
+
+# ALWAYS print accumulators before returning:
+if error_accumulator:
+    print(">>> ERROR_ACCUMULATOR >>>")
+    print(error_accumulator)
+    print("<<< ERROR_ACCUMULATOR <<<")
+if success_accumulator:
+    print(">>> SUCCESS_ACCUMULATOR >>>")
+    print(success_accumulator)
+    print("<<< SUCCESS_ACCUMULATOR <<<")
+```
+
+### Verifier Template (follow this structure)
+```python
+def validate_task(env: Environment, final_answer: str | None = None) -> int:
+    error_accumulator = []
+    success_accumulator = []
+    env.instance.load()
+    seed = env.db("seed")
+    current = env.db("current")
+
+    def find_new_entries(table_name, id_field="id", filter_conditions=None):
+        before_query = seed.table(table_name)
+        after_query = current.table(table_name)
+        if filter_conditions:
+            for key, value in filter_conditions.items():
+                before_query = before_query.eq(key, value)
+                after_query = after_query.eq(key, value)
+        before_ids = set(entry[id_field] for entry in before_query.select(id_field).all())
+        return [e for e in after_query.all() if e[id_field] not in before_ids]
+
+    # Check conditions...
+    # On early failure:
+    if critical_failure:
+        error_accumulator.append("[X] Critical check failed")
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+
+    # Final result:
+    if error_accumulator:
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+    print(">>> SUCCESS_ACCUMULATOR >>>")
+    print(success_accumulator)
+    print("<<< SUCCESS_ACCUMULATOR <<<")
+    return TASK_SUCCESSFUL_SCORE
 ```
 
 ### Rules
+- **NEVER hardcode database IDs** (user_id, hotel_id, etc.) — always query the DB to find them
+- Use `find_new_entries()` to detect rows the agent created (compares seed vs current)
+- Look up the logged-in user by name/email from the users table, don't assume an ID
 - Compare `seed` (before) vs `current` (after) to detect what the agent did
-- Must return 0.0 on a fresh environment (before agent acts)
+- Must return `TASK_FAILED_SCORE` on a fresh environment (before agent acts)
 - Use `final_answer` for tasks that require the agent to report a value
-- Don't hardcode expected values — query the DB to find them
 - Reference actual tool names from this environment
 
 ## Task Design Guidelines
@@ -740,6 +817,30 @@ Generate exactly ONE task. Output it in this format:
 
         # 1. Check for <task> block → evaluation pipeline
         if "<task>" in action:
+            # Gate: require at least one DB exploration call before generating a task
+            # (unless max_turns=1, i.e., single-turn mode, or running out of turns)
+            min_exploration = 1 if self.max_turns > 1 else 0
+            total_tool_calls = self.meta_tool_calls + self.mcp_tool_calls
+            if total_tool_calls < min_exploration and not max_turns_reached:
+                observation = {
+                    "role": "user",
+                    "content": (
+                        "You must explore the database before generating a task. "
+                        "Call `describe_db` to see the schema, then use `query_db` to check "
+                        "actual data (user IDs, table contents, etc.). "
+                        "NEVER hardcode database IDs — always query to find them first."
+                    ),
+                }
+                return BaseTextEnvStepOutput(
+                    observations=[observation],
+                    reward=0.0,
+                    done=False,
+                    metadata={
+                        "env_key": self.env_key,
+                        "turn": self.turns,
+                        "rejected": "no_exploration",
+                    },
+                )
             return await self._handle_task_generation(action)
 
         # 2. Check for tool call → execute via Fleet orchestrator or MCP
