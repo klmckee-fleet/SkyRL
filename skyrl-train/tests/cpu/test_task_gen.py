@@ -806,3 +806,281 @@ def verify(env, final_answer=None):
         assert env.orch is None
         asyncio.run(env.close_async())
         assert env.orch is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: Harness-based evaluator
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not SKYRL_GYM_AVAILABLE, reason="skyrl_gym not installed")
+class TestHarnessEvaluator:
+    """Tests for Fleet harness-based evaluation (replacing FleetTaskEnv stub)."""
+
+    def _make_env(self, **extra_overrides):
+        from omegaconf import DictConfig
+        from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
+
+        cfg = {
+            "k_rollouts": 4,
+            "max_turns": 1,
+            "max_eval_steps": 30,
+            "evaluator_model": "anthropic/claude-sonnet-4.5",
+        }
+        env_config = DictConfig(cfg)
+        extras = {
+            "env_key": "testenv",
+            "env_version": "v1",
+            "data_key": "kinesis",
+            "data_version": "v0.0.1",
+            "env_tools": json.dumps(["search_products"]),
+            "env_tools_schema": json.dumps(SAMPLE_TOOL_SCHEMAS[:1]),
+            "env_variable_keys": json.dumps(["LOGGED_IN_USER"]),
+        }
+        extras.update(extra_overrides)
+        env = TaskGenEnv(env_config=env_config, extras=extras)
+        env.fleet_api_key = "test-key"
+        return env
+
+    # -- _poll_job tests --
+
+    def test_poll_job_completed(self):
+        """_poll_job returns 'completed' when job finishes."""
+        env = self._make_env()
+        mock_fleet = MagicMock()
+        mock_fleet.get_job.return_value = MagicMock(status="completed")
+
+        status = asyncio.run(env._poll_job(mock_fleet, "job-123"))
+        assert status == "completed"
+
+    def test_poll_job_timeout(self):
+        """_poll_job returns 'timeout' when job doesn't complete in time."""
+        env = self._make_env()
+        mock_fleet = MagicMock()
+        mock_fleet.get_job.return_value = MagicMock(status="running")
+
+        # Use 0 timeout to trigger immediate timeout
+        status = asyncio.run(env._poll_job(mock_fleet, "job-123", poll_interval=0, timeout=0))
+        assert status == "timeout"
+
+    def test_poll_job_errored(self):
+        """_poll_job returns 'errored' for failed jobs."""
+        env = self._make_env()
+        mock_fleet = MagicMock()
+        mock_fleet.get_job.return_value = MagicMock(status="errored")
+
+        status = asyncio.run(env._poll_job(mock_fleet, "job-123"))
+        assert status == "errored"
+
+    def test_poll_job_cancelled(self):
+        """_poll_job returns 'cancelled' for cancelled jobs."""
+        env = self._make_env()
+        mock_fleet = MagicMock()
+        mock_fleet.get_job.return_value = MagicMock(status="cancelled")
+
+        status = asyncio.run(env._poll_job(mock_fleet, "job-123"))
+        assert status == "cancelled"
+
+    # -- _extract_job_results tests --
+
+    def test_extract_job_results_scores_and_stdout(self):
+        """_extract_job_results extracts (score, stdout) from sessions."""
+        env = self._make_env()
+        mock_fleet = MagicMock()
+
+        session1 = MagicMock()
+        session1.verifier_execution = MagicMock(score=1.0, stdout="passed")
+        session2 = MagicMock()
+        session2.verifier_execution = MagicMock(score=0.0, stdout="failed check X")
+        session3 = MagicMock()
+        session3.verifier_execution = MagicMock(score=None, success=True, stdout=None)
+        session4 = MagicMock()
+        session4.verifier_execution = None
+
+        task_group = MagicMock()
+        task_group.sessions = [session1, session2, session3, session4]
+        mock_fleet.list_job_sessions.return_value = MagicMock(tasks=[task_group])
+
+        results = env._extract_job_results(mock_fleet, "job-123")
+        assert len(results) == 4
+        assert results[0] == (1.0, "passed")
+        assert results[1] == (0.0, "failed check X")
+        assert results[2] == (1.0, None)  # success=True fallback
+        assert results[3] == (0.0, None)  # no verifier_execution
+
+    def test_extract_job_results_empty_sessions(self):
+        """_extract_job_results returns empty list when no sessions."""
+        env = self._make_env()
+        mock_fleet = MagicMock()
+        mock_fleet.list_job_sessions.return_value = MagicMock(tasks=[])
+
+        results = env._extract_job_results(mock_fleet, "job-123")
+        assert results == []
+
+    # -- _evaluate_task tests --
+
+    def test_evaluate_task_two_jobs(self):
+        """_evaluate_task runs raw + hinted jobs and returns compute_task_reward output."""
+        env = self._make_env()
+
+        call_count = 0
+
+        async def mock_harness_job(prompt, verifier, k):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Raw: 1 of 4 pass
+                return [(0.0, "error log"), (0.0, None), (1.0, None), (0.0, None)]
+            else:
+                # Hinted: 3 of 4 pass
+                return [(1.0, None), (1.0, None), (1.0, None), (0.0, None)]
+
+        env._run_harness_job = mock_harness_job
+
+        result = asyncio.run(env._evaluate_task("test prompt", "def verify(env): return 1.0"))
+        assert call_count == 2
+        assert result["p_raw"] == 0.25
+        assert result["p_hint"] == 0.75
+        assert result["hint_gap"] == 0.5
+        assert abs(result["var_raw"] - 0.1875) < 1e-6
+        expected_total = 1.0 * (0.5 * 0.1875 + 0.5)
+        assert abs(result["total"] - expected_total) < 1e-6
+
+    def test_evaluate_task_no_fleet_key(self):
+        """_evaluate_task returns zeros when no fleet_api_key."""
+        env = self._make_env()
+        env.fleet_api_key = ""
+
+        result = asyncio.run(env._evaluate_task("test", "def verify(env): return 1.0"))
+        assert result["total"] == 0.0
+        assert result["p_raw"] == 0.0
+        assert result["p_hint"] == 0.0
+
+    def test_evaluate_task_hinted_prompt_includes_hint(self):
+        """Hinted job should receive prompt with feedback appended."""
+        env = self._make_env()
+
+        prompts_received = []
+
+        async def mock_harness_job(prompt, verifier, k):
+            prompts_received.append(prompt)
+            if len(prompts_received) == 1:
+                return [(0.0, ">>> ERROR_ACCUMULATOR >>>\n['check failed']\n<<< ERROR_ACCUMULATOR <<<")]
+            else:
+                return [(1.0, None)]
+
+        env._run_harness_job = mock_harness_job
+
+        asyncio.run(env._evaluate_task("do something", "def verify(env): return 1.0"))
+        assert len(prompts_received) == 2
+        assert prompts_received[0] == "do something"
+        assert "feedback from a previous attempt" in prompts_received[1]
+        assert "check failed" in prompts_received[1]
+
+    # -- _handle_task_generation tests --
+
+    def test_handle_task_generation_no_base_reward(self):
+        """Reward should NOT include base_reward or exploration_bonus."""
+        env = self._make_env()
+        env.turns = 0
+        env.meta_tool_calls = 3
+        env.mcp_tool_calls = 2
+
+        env._judge_task = MagicMock(return_value=1.0)
+        env.sandbox = MagicMock()
+        env.sandbox.validate.return_value = MagicMock(valid=True, checks_passed=[], checks_failed=[], error=None)
+
+        async def mock_evaluate(prompt, verifier):
+            from integrations.fleet.task_gen_reward import compute_task_reward
+
+            return compute_task_reward(
+                raw_scores=[0.0, 0.0, 1.0, 0.0],
+                hinted_scores=[1.0, 1.0, 1.0, 0.0],
+            )
+
+        env._evaluate_task = mock_evaluate
+
+        task_action = (
+            "<task>\n"
+            "<prompt>Search for a widget</prompt>\n"
+            "<verifier>\n"
+            "def verify(env, final_answer=None):\n"
+            "    env.instance.load()\n"
+            '    current = env.db("current")\n'
+            '    rows = current.table("products").eq("name", "widget").all()\n'
+            "    return 1.0 if rows else 0.0\n"
+            "</verifier>\n"
+            "</task>"
+        )
+
+        result = asyncio.run(env.step_async(task_action))
+        assert result["done"] is True
+
+        breakdown = result["metadata"]["reward_breakdown"]
+        assert "base_reward" not in breakdown
+        assert "exploration_bonus" not in breakdown
+
+        from integrations.fleet.task_gen_reward import compute_task_reward
+
+        expected = compute_task_reward(
+            raw_scores=[0.0, 0.0, 1.0, 0.0],
+            hinted_scores=[1.0, 1.0, 1.0, 0.0],
+        )
+        assert abs(result["reward"] - expected["total"]) < 1e-6
+
+    def test_handle_task_generation_judge_fail_no_exploration_bonus(self):
+        """Judge failure should return reward=0, no exploration_bonus."""
+        env = self._make_env()
+        env.turns = 0
+        env.meta_tool_calls = 5
+        env.mcp_tool_calls = 2
+
+        env._judge_task = MagicMock(return_value=0.0)
+        env.sandbox = MagicMock()
+        env.sandbox.validate.return_value = MagicMock(valid=True, checks_passed=[], checks_failed=[], error=None)
+
+        task_action = (
+            "<task>\n"
+            "<prompt>Search for a widget</prompt>\n"
+            "<verifier>\n"
+            "def verify(env, final_answer=None):\n"
+            "    env.instance.load()\n"
+            '    current = env.db("current")\n'
+            '    rows = current.table("products").eq("name", "widget").all()\n'
+            "    return 1.0 if rows else 0.0\n"
+            "</verifier>\n"
+            "</task>"
+        )
+
+        result = asyncio.run(env.step_async(task_action))
+        assert result["done"] is True
+        assert result["reward"] == 0.0
+        assert "exploration_bonus" not in result["metadata"]["reward_breakdown"]
+
+    def test_handle_task_generation_parse_fail_zero_reward(self):
+        """Parse failure should return reward=0."""
+        env = self._make_env()
+        env.turns = 0
+        env.meta_tool_calls = 5
+        env.mcp_tool_calls = 3
+
+        result = asyncio.run(env.step_async("<task>malformed no prompt or verifier tags</task>"))
+        assert result["done"] is True
+        assert result["reward"] == 0.0
+
+    def test_nudge_max_turns_no_exploration_bonus(self):
+        """Max turns nudge should return reward=0, no exploration_bonus."""
+        from omegaconf import DictConfig
+        from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
+
+        env_config = DictConfig({"max_turns": 1})
+        extras = {"env_key": "test"}
+        env = TaskGenEnv(env_config=env_config, extras=extras)
+        env.turns = 0
+        env.meta_tool_calls = 5
+        env.mcp_tool_calls = 3
+
+        result = asyncio.run(env.step_async("just thinking..."))
+        assert result["done"] is True
+        assert result["reward"] == 0.0
+        assert "exploration_bonus" not in result["metadata"]

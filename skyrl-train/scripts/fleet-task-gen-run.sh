@@ -70,4 +70,5 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   ++environment.skyrl_gym.task_gen.judge_model="$JUDGE_MODEL" \
   ++environment.skyrl_gym.task_gen.k_rollouts=$K_ROLLOUTS \
   ++environment.skyrl_gym.task_gen.alpha=$ALPHA \
-  ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS
+  ++environment.skyrl_gym.task_gen.max_eval_steps=$MAX_EVAL_STEPS \
+  ++environment.skyrl_gym.task_gen.evaluator_model="${EVALUATOR_MODEL:-anthropic/claude-sonnet-4.5}"
