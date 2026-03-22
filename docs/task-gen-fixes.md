@@ -83,7 +83,7 @@ Tracking all fixes applied to the multi-turn task generation RL training pipelin
 ---
 
 ## Fix #6: Base Quality Reward for GRPO Signal
-**Commit**: (pending)
+**Commit**: `c5edb012`
 **Symptom**: Rewards stuck at 0.0 despite working accumulators. Verifier structure correct but logic wrong (bad column names, wrong table lookups). All harness evals return 0 → GRPO has zero variance → no learning signal.
 **Root Cause**: When ALL harness evaluations score 0.0, `compute_task_reward()` returns `var=0, hint_gap=0, total=0`. With all samples getting the same reward, GRPO advantage is zero for every token.
 **Fix**:
@@ -107,7 +107,7 @@ Tracking all fixes applied to the multi-turn task generation RL training pipelin
 ---
 
 ## Fix #7: Address 5 Verifier Crash Modes
-**Commit**: (pending)
+**Commit**: `30d9a1fa`
 **Symptom**: 89% of harness evals still score 0. Investigation of 160 sessions across 40 jobs revealed 5 distinct verifier crash categories.
 **Root Causes** (from iter4 job analysis):
 1. **Hallucinated `.order()` method** (7 crashes): Model calls `.order("col", descending=True)` which doesn't exist
