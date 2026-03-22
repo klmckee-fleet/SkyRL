@@ -682,7 +682,7 @@ Generate exactly ONE task. Output it in this format:
     async def _run_harness_job(
         self, prompt: str, verifier: str, k: int
     ) -> List[Tuple[float, Optional[str], Optional[str]]]:
-        """Run a single Fleet harness job and return per-session (score, stdout, error).
+        """Run a single Fleet harness job and return per-session results + job ID.
 
         1. Import task to Fleet
         2. Create harness job with pass_k=k
@@ -690,7 +690,9 @@ Generate exactly ONE task. Output it in this format:
         4. Extract results
 
         Returns:
-            List of (score, verifier_stdout, verifier_error) tuples.
+            Tuple of (job_id, results) where results is a list of
+            (score, verifier_stdout, verifier_error) tuples.
+            job_id is None on failure.
         """
         from fleet.tasks import Task
 
@@ -710,7 +712,7 @@ Generate exactly ONE task. Output it in this format:
         import_response = fleet.import_single_task(task)
         if import_response is None:
             logger.error(f"[{task_key}] Failed to import task to Fleet")
-            return [(0.0, None, None)] * k
+            return (None, [(0.0, None, None)] * k)
 
         job_response = fleet.create_job(
             models=[self.evaluator_model],
@@ -726,9 +728,9 @@ Generate exactly ONE task. Output it in this format:
         status = await self._poll_job(fleet, job_id)
         if status != "completed":
             logger.warning(f"[{task_key}] Job {job_id} ended with status: {status}")
-            return [(0.0, None, None)] * k
+            return (job_id, [(0.0, None, None)] * k)
 
-        return self._extract_job_results(fleet, job_id)
+        return (job_id, self._extract_job_results(fleet, job_id))
 
     async def _evaluate_task(self, prompt: str, verifier: str) -> Dict[str, float]:
         """Run hint-based evaluation via Fleet harness jobs.
@@ -753,7 +755,7 @@ Generate exactly ONE task. Output it in this format:
 
         try:
             # 1. Raw job: k rollouts without hints
-            raw_results = await self._run_harness_job(prompt, verifier, k=self.k_rollouts)
+            raw_job_id, raw_results = await self._run_harness_job(prompt, verifier, k=self.k_rollouts)
             raw_scores = [r[0] for r in raw_results]
 
             # 2. Build hint from first failing session's stdout/error
@@ -771,7 +773,7 @@ Generate exactly ONE task. Output it in this format:
 
             # 3. Hinted job: k rollouts with hint
             hinted_prompt = f"{prompt}\n\nHere is feedback from a previous attempt to help you:\n{hint_text}"
-            hinted_results = await self._run_harness_job(hinted_prompt, verifier, k=self.k_rollouts)
+            hinted_job_id, hinted_results = await self._run_harness_job(hinted_prompt, verifier, k=self.k_rollouts)
             hinted_scores = [r[0] for r in hinted_results]
 
             # 4. Compute reward
@@ -780,6 +782,7 @@ Generate exactly ONE task. Output it in this format:
             duration = time.time() - start
             logger.info(
                 f"[{task_id}] Eval done in {duration:.0f}s: "
+                f"raw_job={raw_job_id}, hinted_job={hinted_job_id}, "
                 f"raw={raw_scores} (p={result['p_raw']:.2f}), "
                 f"hinted={hinted_scores} (p={result['p_hint']:.2f}), "
                 f"var_raw={result['var_raw']:.4f}, hint_gap={result['hint_gap']:.4f}, "
