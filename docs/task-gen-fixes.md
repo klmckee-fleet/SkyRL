@@ -96,7 +96,33 @@ Tracking all fixes applied to the multi-turn task generation RL training pipelin
 - Sandbox failure → 0.0
 - Judge failure → 0.0
 - Pass sandbox+judge, harness all zeros → 0.1
-- Pass sandbox+judge, some harness success → 0.1 + eval_signal (up to ~0.35)
+- Pass sandbox+judge, some harness success → 0.1 + eval_signal (up to ~1.1)
+
+**Evidence** (iter4, first 2 steps):
+- Step 1: avg_final_rewards=0.0238 (was 0.0 in all prior runs!)
+- Step 2: avg_final_rewards=0.0292
+- taskgen_1c5278de: raw=[0,1,0,0] hinted=[1,1,1,1] total=0.8438
+- taskgen_f6c1299c: raw=[0,0,0,0] hinted=[1,1,1,1] total=1.0000
+
+---
+
+## Fix #7: Address 5 Verifier Crash Modes
+**Commit**: (pending)
+**Symptom**: 89% of harness evals still score 0. Investigation of 160 sessions across 40 jobs revealed 5 distinct verifier crash categories.
+**Root Causes** (from iter4 job analysis):
+1. **Hallucinated `.order()` method** (7 crashes): Model calls `.order("col", descending=True)` which doesn't exist
+2. **`.eq()` with 3 args** (5 crashes): Model writes `.eq("rating", ">", 8.0)` — `.eq()` only takes `(column, value)`
+3. **Tuple vs dict confusion** (5 crashes): Creates tuples in list comp `[(a, b) for ...]`, then tries `item["key"]` access
+4. **KeyError after `.select()`** (8 crashes): Uses `.select("id", "name")` then accesses `row["subscribers"]`
+5. **`find_new_entries` not defined** (5 crashes): Calls helper without defining it in verifier body
+6. **Hardcoded expected values** (24+ sessions): Verifier checks for specific invented values agent can't know
+**Fix**: Added rules to system prompt:
+- Explicitly banned `.order()`, `.limit()` — use Python `sorted()`/`[:N]` instead
+- Documented `.eq()` takes exactly 2 args, use Python for comparisons
+- Warned about tuple/dict confusion in list comprehensions
+- Warned that `.select()` limits available columns
+- Instructed to define `find_new_entries` inside verifier body (not a built-in)
+- Added rule: never hardcode expected values agent must invent — compare against seed state instead
 
 ---
 
@@ -118,4 +144,4 @@ The evaluator agent (Sonnet 4.5) sometimes asks follow-up questions instead of c
 | `task_gen_55f7b9c8` | TBD | Killed | Fix #1-#3, still all zeros (env.env_variables crash) |
 | iter3 (55f7b9c8 cont) | TBD | Killed | Fix #1-#4, still zeros (dict access crash) |
 | iter3 (relaunched) | TBD | Killed | Fix #1-#5, accumulators work but all harness 0.0 |
-| iter4 | TBD | Pending | Fix #1-#6, base_quality_reward=0.1 for GRPO signal |
+| iter4 (task_gen_c1e71be3) | `1hsk4bhw` | Running | Fix #1-#6, base_quality=0.1, first non-zero rewards! |

@@ -406,9 +406,13 @@ def validate_task(env: Environment, final_answer: str | None = None) -> int:
 - **NEVER hardcode database IDs** (user_id, hotel_id, etc.) — always query the DB to find them
 - **NEVER use `env.env_variables`** — it is not available at runtime. Embed env var values as string constants at the top of your verifier (e.g., `LOGGED_IN_USER = "riley3318"`)
 - **DB rows are dicts** — use `row["id"]`, `row["name"]`, NOT `row.id`, `row.name`. Using dot notation will crash with `AttributeError: 'dict' object has no attribute 'id'`
-- **Only use supported query methods**: `.eq()`, `.neq()`, `.select()`, `.all()`, `.first()`, `.count()`. NO `.like()`, `.gt()`, `.lt()`, `.contains()`, `.in_()` — filter in Python instead (e.g., `[r for r in rows if "tech" in r["name"].lower()]`)
+- **Only use supported query methods**: `.eq()`, `.neq()`, `.select()`, `.all()`, `.first()`, `.count()`. NO `.like()`, `.gt()`, `.lt()`, `.order()`, `.limit()`, `.contains()`, `.in_()` — filter and sort in Python instead (e.g., `sorted([r for r in rows if r["score"] > 8.0], key=lambda r: r["score"], reverse=True)[:5]`)
+- **`.eq()` takes exactly 2 args**: `.eq(column, value)`. NO operator arg like `.eq("rating", ">", 8)` — use Python: `[r for r in rows if r["rating"] > 8]`
 - **Use timezone-tolerant comparisons** for datetimes — the DB may store `"2025-08-08T14:00:00Z"` while you expect `"2025-08-08T14:00:00"`. Use `.startswith()` or strip the trailing `"Z"` before comparing
-- Use `find_new_entries()` to detect rows the agent created (compares seed vs current)
+- **If you use `.select()`, only access the selected columns** — accessing other columns raises `KeyError`. Prefer `.all()` without `.select()` unless you specifically need to limit columns
+- **Define `find_new_entries` inside your verifier function** — it is NOT a built-in. Copy it from the template above into your `validate_task()` function body. Do NOT call `find_new_entries()` without defining it first
+- **List comprehensions produce tuples if you use tuple syntax** — `[(a, b) for ...]` creates tuples, not dicts. If you need dict-like access later, keep the original dicts: `[row for row in rows if condition]`
+- **NEVER hardcode expected values the agent must create** — e.g., don't check for a specific phone number or email the agent would need to invent. Instead, check that the field was changed from its original value: `current_val != seed_val`
 - Look up the logged-in user by name/email from the users table, don't assume an ID
 - Compare `seed` (before) vs `current` (after) to detect what the agent did
 - Must return `TASK_FAILED_SCORE` on a fresh environment (before agent acts)
