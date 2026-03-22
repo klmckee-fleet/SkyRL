@@ -127,6 +127,8 @@ run: |
     generator.eval_n_samples_per_prompt=3 \
     generator.enforce_eager=false \
     generator.gpu_memory_utilization=0.65 \
+    generator.inject_context_status=true \
+    generator.context_warning_threshold=0.90 \
     trainer.logger="$LOGGER" \
     trainer.project_name="fleet-task-grpo" \
     trainer.run_name="fleet_qwen35_35b_${MODALITY}_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
