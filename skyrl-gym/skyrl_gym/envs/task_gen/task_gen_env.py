@@ -235,18 +235,26 @@ class TaskGenEnv(BaseTextEnv):
 
         # Environment variables (user context available at task runtime)
         if self.env_variables:
-            parts.append("\n### Environment Variables")
+            parts.append("\n### Environment Variables (embed as constants)")
             parts.append(
-                "These variables parameterize each environment instance. "
-                'Access them in verifiers via `env.env_variables["KEY"]`:'
+                "These variables describe the user/session context. "
+                "**Embed them directly as string constants** in your verifier code. "
+                "Do NOT use `env.env_variables` — it is not available at verifier runtime."
             )
             for var_key, var_val in self.env_variables.items():
-                parts.append(f"- `{var_key}` = `{var_val}`")
+                parts.append(f'- `{var_key}` = `"{var_val}"`')
+            parts.append(
+                "\nExample usage in verifier:\n"
+                "```python\n"
+                f'LOGGED_IN_USER = "{self.env_variables.get("LOGGED_IN_USER", "user@example.com")}"\n'
+                f'# Use as: rows = current.table("users").eq("email", LOGGED_IN_USER).all()\n'
+                "```"
+            )
         elif self.env_variable_keys:
             parts.append("\n### Environment Variables")
             parts.append(
                 "These variables parameterize each environment instance. "
-                'Access them in verifiers via `env.env_variables["KEY"]`:'
+                "Look up values from the database instead of using env.env_variables."
             )
             for var_key in self.env_variable_keys:
                 parts.append(f"- `{var_key}`")
@@ -280,11 +288,8 @@ class TaskGenEnv(BaseTextEnv):
             )
 
         env_var_api = ""
-        if self.env_variable_keys:
-            example_key = self.env_variable_keys[0]
-            env_var_api = f"""
-# Access environment variables:
-val = env.env_variables["{example_key}"]"""
+        # NOTE: env.env_variables is NOT available at verifier runtime (Fleet harness bug).
+        # Model is instructed to embed env var values as constants instead.
 
         parts.append(
             f"""
@@ -318,7 +323,7 @@ def find_new_entries(seed, current, table_name, id_field="id", filter_conditions
             before_query = before_query.eq(key, value)
             after_query = after_query.eq(key, value)
     before_ids = {{entry[id_field] for entry in before_query.select(id_field).all()}}
-    return [e for e in after_query.all() if e[id_field] not in before_ids]{env_var_api}
+    return [e for e in after_query.all() if e[id_field] not in before_ids]
 ```
 
 ### Error Tracking (REQUIRED)
@@ -388,6 +393,8 @@ def validate_task(env: Environment, final_answer: str | None = None) -> int:
 
 ### Rules
 - **NEVER hardcode database IDs** (user_id, hotel_id, etc.) — always query the DB to find them
+- **NEVER use `env.env_variables`** — it is not available at runtime. Embed env var values as string constants at the top of your verifier (e.g., `LOGGED_IN_USER = "riley3318"`)
+- **Use timezone-tolerant comparisons** for datetimes — the DB may store `"2025-08-08T14:00:00Z"` while you expect `"2025-08-08T14:00:00"`. Use `.startswith()` or strip the trailing `"Z"` before comparing
 - Use `find_new_entries()` to detect rows the agent created (compares seed vs current)
 - Look up the logged-in user by name/email from the users table, don't assume an ID
 - Compare `seed` (before) vs `current` (after) to detect what the agent did
@@ -613,29 +620,36 @@ Generate exactly ONE task. Output it in this format:
         logger.error(f"Job {job_id} timed out after {timeout}s")
         return "timeout"
 
-    def _extract_job_results(self, fleet, job_id: str) -> List[Tuple[float, Optional[str]]]:
-        """Extract (score, verifier_stdout) from completed job sessions.
+    def _extract_job_results(self, fleet, job_id: str) -> List[Tuple[float, Optional[str], Optional[str]]]:
+        """Extract (score, verifier_stdout, verifier_error) from completed job sessions.
 
         Returns:
-            List of (score, verifier_stdout) tuples per session.
+            List of (score, stdout, error) tuples per session.
         """
-        results: List[Tuple[float, Optional[str]]] = []
+        results: List[Tuple[float, Optional[str], Optional[str]]] = []
         sessions_response = fleet.list_job_sessions(job_id)
         for task_group in sessions_response.tasks:
             for session in task_group.sessions:
                 score = 0.0
                 stdout = None
+                error = None
                 if session.verifier_execution:
                     if session.verifier_execution.score is not None:
                         score = float(session.verifier_execution.score)
                     elif session.verifier_execution.success:
                         score = 1.0
                     stdout = getattr(session.verifier_execution, "stdout", None)
-                results.append((score, stdout))
+                    # Capture error/stderr for hint building when verifiers crash
+                    error = getattr(session.verifier_execution, "stderr", None)
+                    if not error:
+                        error = getattr(session.verifier_execution, "error", None)
+                results.append((score, stdout, error))
         return results
 
-    async def _run_harness_job(self, prompt: str, verifier: str, k: int) -> List[Tuple[float, Optional[str]]]:
-        """Run a single Fleet harness job and return per-session (score, stdout).
+    async def _run_harness_job(
+        self, prompt: str, verifier: str, k: int
+    ) -> List[Tuple[float, Optional[str], Optional[str]]]:
+        """Run a single Fleet harness job and return per-session (score, stdout, error).
 
         1. Import task to Fleet
         2. Create harness job with pass_k=k
@@ -643,7 +657,7 @@ Generate exactly ONE task. Output it in this format:
         4. Extract results
 
         Returns:
-            List of (score, verifier_stdout) tuples.
+            List of (score, verifier_stdout, verifier_error) tuples.
         """
         from fleet.tasks import Task
 
@@ -663,7 +677,7 @@ Generate exactly ONE task. Output it in this format:
         import_response = fleet.import_single_task(task)
         if import_response is None:
             logger.error(f"[{task_key}] Failed to import task to Fleet")
-            return [(0.0, None)] * k
+            return [(0.0, None, None)] * k
 
         job_response = fleet.create_job(
             models=[self.evaluator_model],
@@ -679,7 +693,7 @@ Generate exactly ONE task. Output it in this format:
         status = await self._poll_job(fleet, job_id)
         if status != "completed":
             logger.warning(f"[{task_key}] Job {job_id} ended with status: {status}")
-            return [(0.0, None)] * k
+            return [(0.0, None, None)] * k
 
         return self._extract_job_results(fleet, job_id)
 
@@ -709,13 +723,18 @@ Generate exactly ONE task. Output it in this format:
             raw_results = await self._run_harness_job(prompt, verifier, k=self.k_rollouts)
             raw_scores = [r[0] for r in raw_results]
 
-            # 2. Build hint from first failing session's stdout
+            # 2. Build hint from first failing session's stdout/error
             hint_stdout = None
-            for score, stdout in raw_results:
-                if score < 1.0 and stdout:
-                    hint_stdout = stdout
-                    break
-            hint_text = self._build_hint_text(hint_stdout, None, None)
+            hint_error = None
+            for score, stdout, error in raw_results:
+                if score < 1.0:
+                    if stdout:
+                        hint_stdout = stdout
+                    if error:
+                        hint_error = error
+                    if hint_stdout or hint_error:
+                        break
+            hint_text = self._build_hint_text(hint_stdout, hint_error, None)
 
             # 3. Hinted job: k rollouts with hint
             hinted_prompt = f"{prompt}\n\nHere is feedback from a previous attempt to help you:\n{hint_text}"
