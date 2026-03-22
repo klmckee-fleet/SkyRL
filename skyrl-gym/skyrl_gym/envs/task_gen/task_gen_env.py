@@ -201,6 +201,17 @@ class TaskGenEnv(BaseTextEnv):
 
         parts.append(f'You are a task designer for the "{self.env_key}" environment.')
 
+        # --- Date context (critical for date-sensitive environments) ---
+        current_date = self.env_variables.get("CURRENT_DATE", "")
+        if current_date:
+            parts.append(
+                f"\n**IMPORTANT — Current Date: {current_date}**\n"
+                f"The environment's current date is {current_date}. "
+                "All dates in generated tasks MUST be on or after this date. "
+                "Do NOT use past dates — the environment will reject them "
+                "(e.g., check-in dates, event dates, appointment dates must be in the future)."
+            )
+
         # --- A. Environment context (from tool discovery) ---
         parts.append(f"\n## Environment: {self.env_key}")
         parts.append("\n### Available Tools")
@@ -250,6 +261,24 @@ class TaskGenEnv(BaseTextEnv):
             parts.append(f"```\n{self.env_schema}\n```")
 
         # --- B. Priors (concise, static, same for all envs) ---
+        # Date awareness guidance (prevents past-date failures in booking/ticketmaster)
+        if current_date:
+            date_guidance = (
+                f"### Date Awareness\n"
+                f"The environment's current date is **{current_date}**. "
+                f"ALL dates in your task MUST be on or after {current_date}. "
+                "Tasks with past dates will always fail because the environment "
+                "rejects them (e.g., 'checkIn date cannot be in the past'). "
+                "Use `query_db` to check what date ranges exist in the data, "
+                "and always generate future dates."
+            )
+        else:
+            date_guidance = (
+                "### Date Awareness\n"
+                "If the environment works with dates, verify what date ranges "
+                "are valid before generating tasks. Use `query_db` to check."
+            )
+
         env_var_api = ""
         if self.env_variable_keys:
             example_key = self.env_variable_keys[0]
@@ -293,6 +322,8 @@ new_rows = [r for r in current_rows if r not in seed_rows]{env_var_api}
 
 Design tasks that maximize learnability: an ideal task is one that a capable agent can solve with effort, but not trivially. Tasks that are too easy (always solved) or too hard (never solved) produce no learning signal.
 
+{date_guidance}
+
 ### Realism
 Write prompts as a real user would — natural language, concrete parameters, plausible intent. The task should sound like something a person would actually ask, not a test case.
 
@@ -316,10 +347,13 @@ GOOD: "How many bookings have a check-in date of March 15, 2024?"
 
 The prompt should specify the desired outcome. The agent should figure out which tools to use and in what order.
 
+### Complexity
+Aim for tasks solvable in 2-8 tool calls. Tasks requiring 1 tool call are too easy (no signal). Tasks requiring 15+ calls are too hard (agent gives up). The sweet spot is 3-6 calls with some reasoning required.
+
 ### Diversity
 Vary tasks across multiple dimensions:
 - Operations: reads (lookup, search, aggregate) AND writes (create, update, delete)
-- Complexity: simple (1-2 tool calls) through complex (5-15+ tool calls with dependencies)
+- Complexity: simple (2-3 tool calls) through moderate (4-8 tool calls with dependencies)
 - Reasoning: some tasks need multi-step logic (find X, use X to look up Y, modify Y based on Z)
 - Data entities: use different tables, columns, and relationships in the schema
 
@@ -747,11 +781,16 @@ Generate exactly ONE task. Output it in this format:
                 },
             )
 
-        nudge = (
-            "Use <tool_call> to explore the database or call environment tools, then generate a <task> block."
-            if self.max_turns > 1
-            else "No <task> block found. Output your task in <task>...</task> format."
-        )
+        remaining = self.max_turns - self.turns
+        if self.max_turns == 1:
+            nudge = "No <task> block found. Output your task in <task>...</task> format."
+        elif remaining <= 2:
+            nudge = (
+                f"You have {remaining} turn(s) left. Output your <task> block NOW or you will "
+                "get reward 0. Stop exploring and generate the task."
+            )
+        else:
+            nudge = "Use <tool_call> to explore the database or call environment tools, then generate a <task> block."
         observation = {"role": "user", "content": nudge}
         return BaseTextEnvStepOutput(
             observations=[observation],
