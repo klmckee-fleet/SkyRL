@@ -64,6 +64,42 @@ Tracking all fixes applied to the multi-turn task generation RL training pipelin
 
 ---
 
+## Fix #5: Dict Access Pattern + Error Extraction Path
+**Commit**: `973e471f`
+**Symptom**: Verifiers crash with `AttributeError: 'dict' object has no attribute 'id'`; error not extracted for hints
+**Root Causes**:
+1. **Dict vs object access**: Model uses `row.column` (dot notation) but DB queries return Python dicts. Must use `row["column"]`.
+2. **Unsupported query methods**: Model invents `.like()`, `.gt()` etc. Only `.eq()`, `.neq()`, `.select()`, `.all()`, `.first()`, `.count()` exist.
+3. **Wrong error extraction path**: Code checked `verifier_execution.stderr` (always None). Actual error is at `verifier_execution.result.error.traceback`.
+**Fix**:
+- Verifier API docs: explicit "rows are dicts, use row['col']"
+- Listed all supported query methods, banned invented ones
+- Added Python filtering example for unsupported operations
+- Fixed error extraction: now reads `result.error.traceback`
+
+**Evidence**:
+- Job `e749a6e9` (reddit): 3/4 crashed with `AttributeError: 'dict' object has no attribute 'id'` at verifier.py line 37
+
+---
+
+## Fix #6: Base Quality Reward for GRPO Signal
+**Commit**: (pending)
+**Symptom**: Rewards stuck at 0.0 despite working accumulators. Verifier structure correct but logic wrong (bad column names, wrong table lookups). All harness evals return 0 → GRPO has zero variance → no learning signal.
+**Root Cause**: When ALL harness evaluations score 0.0, `compute_task_reward()` returns `var=0, hint_gap=0, total=0`. With all samples getting the same reward, GRPO advantage is zero for every token.
+**Fix**:
+- Added `base_quality_reward` parameter (default 0.1) to TaskGenEnv
+- Tasks passing sandbox+judge gate get `R = 0.1 + eval_signal` instead of `R = eval_signal`
+- Tasks failing parse/sandbox/judge still get R=0.0
+- This creates reward variance between "structurally valid" (0.1) and "invalid" (0.0) samples, giving GRPO gradient signal to push toward valid task generation
+**Expected reward distribution**:
+- Parse failure → 0.0
+- Sandbox failure → 0.0
+- Judge failure → 0.0
+- Pass sandbox+judge, harness all zeros → 0.1
+- Pass sandbox+judge, some harness success → 0.1 + eval_signal (up to ~0.35)
+
+---
+
 ## Known Issues (Not Yet Fixed)
 
 ### Fleet Harness Runtime Bug: `env.env_variables = None`
@@ -80,4 +116,6 @@ The evaluator agent (Sonnet 4.5) sometimes asks follow-up questions instead of c
 |----------|-------|--------|-------|
 | `task_gen_494dce32` | `9i3ueeut` | Killed | Fix #1-#2 only, 100% zero rewards |
 | `task_gen_55f7b9c8` | TBD | Killed | Fix #1-#3, still all zeros (env.env_variables crash) |
-| (next) | TBD | Pending | Fix #1-#4, env vars as constants + error hints |
+| iter3 (55f7b9c8 cont) | TBD | Killed | Fix #1-#4, still zeros (dict access crash) |
+| iter3 (relaunched) | TBD | Killed | Fix #1-#5, accumulators work but all harness 0.0 |
+| iter4 | TBD | Pending | Fix #1-#6, base_quality_reward=0.1 for GRPO signal |

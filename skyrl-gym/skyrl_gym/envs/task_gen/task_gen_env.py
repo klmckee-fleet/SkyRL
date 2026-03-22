@@ -10,8 +10,9 @@ behaves identically to the original single-turn variant.
 
 Reward:
 
-    R(task) = llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
+    R(task) = base_quality + llm_validity * (alpha * var(raw_scores) + (p_hint - p_raw))
 
+    base_quality:     Small reward for passing sandbox+judge (default 0.1)
     llm_validity:     Binary 0/1 from LLM-as-a-judge (is the task well-formed?)
     var(raw_scores):  Variance of k raw evaluator rollouts (difficulty calibration)
     p_hint - p_raw:   Hint gap — solvable with hints but not without (learnability)
@@ -72,6 +73,8 @@ class TaskGenEnv(BaseTextEnv):
         k_rollouts: Number of rollouts per condition (raw/hinted, default 4)
         max_eval_steps: Max agent steps per evaluator rollout (default 30)
         evaluator_model: Fleet harness model for task evaluation (default anthropic/claude-sonnet-4.5)
+        base_quality_reward: Small reward for passing sandbox+judge (default 0.1).
+            Prevents GRPO zero-signal deadlock when all harness evals fail.
     """
 
     def __init__(
@@ -169,10 +172,15 @@ class TaskGenEnv(BaseTextEnv):
         # Lazy-init Fleet SDK client for harness evaluation
         self._fleet_client = None
 
+        # Base quality reward for tasks passing sandbox + judge gate.
+        # Provides GRPO gradient signal even when all harness evals return 0.
+        self.base_quality_reward = float(env_config.get("base_quality_reward", 0.1)) if env_config else 0.1
+
         logger.info(
             f"TaskGenEnv: env={self.env_key}, max_turns={self.max_turns}, "
             f"judge={self.judge_model or 'none'}, "
-            f"tools={len(self.env_tools)}, k={self.k_rollouts}, evaluator={self.evaluator_model}"
+            f"tools={len(self.env_tools)}, k={self.k_rollouts}, evaluator={self.evaluator_model}, "
+            f"base_quality={self.base_quality_reward}"
         )
 
     def _format_tool_schema(self, tool: Dict[str, Any]) -> str:
@@ -788,7 +796,10 @@ Generate exactly ONE task. Output it in this format:
             2. Sandbox validation -> fail = reward 0
             3. LLM-as-a-judge -> gate (0/1), fail = reward 0
             4. Hint-based evaluation via Fleet harness (k raw + k hinted rollouts)
-            5. R = judge_gate * compute_task_reward(raw_scores, hinted_scores)
+            5. R = base_quality + judge_gate * compute_task_reward(raw, hinted)
+
+        base_quality (default 0.1) rewards structural validity (sandbox+judge pass),
+        providing GRPO gradient signal even when harness evals return all zeros.
         """
         metadata: Dict[str, Any] = {"env_key": self.env_key, "turn": self.turns}
 
@@ -827,12 +838,19 @@ Generate exactly ONE task. Output it in this format:
         # 4. Hint-based evaluation via Fleet harness
         eval_result = await self._evaluate_task(prompt, verifier)
 
-        # 5. R = judge_gate * compute_task_reward total
-        reward = judge_gate * eval_result["total"]
+        # 5. R = base_quality + eval_signal
+        # base_quality: small reward for passing sandbox+judge (structural validity)
+        # eval_signal: judge_gate * compute_task_reward (harness-based quality)
+        # This prevents GRPO zero-signal deadlock when all harness evals fail.
+        base_quality = self.base_quality_reward
+        eval_signal = judge_gate * eval_result["total"]
+        reward = base_quality + eval_signal
 
         metadata["reward_breakdown"] = {
             "sandbox": 1.0,
             "judge": judge_gate,
+            "base_quality": base_quality,
+            "eval_signal": eval_signal,
             **eval_result,
             "total": reward,
         }
