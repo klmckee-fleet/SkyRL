@@ -12,7 +12,7 @@ Components:
       Positive when hints help, meaning the task is hard but solvable.
       Captures learnability beyond current capability.
     - llm_validity: LLM-as-a-judge gate (0/1). Kills reward for broken tasks.
-    - alpha: Weight balancing variance (frontier difficulty) vs hint gap (learnability).
+    - alpha: Weight balancing variance (frontier difficulty) vs hint gap (learnability). Default 1.0 (equal weight).
 """
 
 from typing import Dict, List
@@ -57,7 +57,7 @@ def compute_task_reward(
     raw_scores: List[float],
     hinted_scores: List[float],
     validity: float = 1.0,
-    alpha: float = 0.5,
+    alpha: float = 1.0,
 ) -> Dict[str, float]:
     """Compute the full task generation reward.
 

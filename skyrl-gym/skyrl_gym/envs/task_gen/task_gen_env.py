@@ -500,7 +500,161 @@ Calls the tool and returns its result. Use this to understand input/output forma
 7. **Output**: Only when confident, output the final task in the format below."""
             )
 
-        # --- D. Output format ---
+        # --- D. Few-shot examples ---
+        parts.append(
+            """
+## Examples of Good Tasks
+
+### Example 1 — Write task (booking)
+<task>
+<prompt>
+Create a new wishlist named "Weekend Getaway" for the currently logged-in user and add the hotel with the highest average rating in London to it.
+</prompt>
+<verifier>
+def validate_task(env, final_answer=None) -> int:
+    error_accumulator = []
+    success_accumulator = []
+    env.instance.load()
+    seed = env.db("seed")
+    current = env.db("current")
+
+    LOGGED_IN_USER = "kenneth.johnson@example.com"
+
+    # Find user
+    user_rows = current.table("users").eq("email", LOGGED_IN_USER).all()
+    if not user_rows:
+        error_accumulator.append("[X] User not found")
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+
+    user_id = user_rows[0]["id"]
+
+    # Check wishlist was created
+    seed_wishlists = seed.table("wishlist_lists").eq("user_id", user_id).all()
+    current_wishlists = current.table("wishlist_lists").eq("user_id", user_id).all()
+    seed_names = {w["list_name"] for w in seed_wishlists}
+    new_wishlists = [w for w in current_wishlists if w["list_name"] not in seed_names]
+
+    if not new_wishlists:
+        error_accumulator.append("[X] No new wishlist created")
+    elif "Weekend Getaway" not in [w["list_name"] for w in new_wishlists]:
+        error_accumulator.append("[X] Wishlist not named 'Weekend Getaway'")
+    else:
+        success_accumulator.append("[C] Wishlist 'Weekend Getaway' created")
+
+    if error_accumulator:
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+    print(">>> SUCCESS_ACCUMULATOR >>>")
+    print(success_accumulator)
+    print("<<< SUCCESS_ACCUMULATOR <<<")
+    return TASK_SUCCESSFUL_SCORE
+</verifier>
+</task>
+
+### Example 2 — Read + reason task (e-commerce)
+<task>
+<prompt>
+Find the customer who has spent the most money across all their orders. Report their email address and total spending amount.
+</prompt>
+<verifier>
+def validate_task(env, final_answer=None) -> int:
+    error_accumulator = []
+    success_accumulator = []
+    env.instance.load()
+    current = env.db("current")
+
+    if final_answer is None:
+        error_accumulator.append("[X] No answer provided")
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+
+    # Compute ground truth: top spender
+    orders = current.table("orders").all()
+    customer_spend = {}
+    for o in orders:
+        cid = o["customer_id"]
+        customer_spend[cid] = customer_spend.get(cid, 0) + float(o["total_amount"])
+
+    if not customer_spend:
+        error_accumulator.append("[X] No orders in database")
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+
+    top_cid = max(customer_spend, key=customer_spend.get)
+    top_customer = current.table("customers").eq("id", top_cid).first()
+    expected_email = top_customer["email"]
+
+    if expected_email in str(final_answer):
+        success_accumulator.append("[C] Correctly identified top spender: " + expected_email)
+    else:
+        error_accumulator.append("[X] Wrong customer. Expected: " + expected_email)
+
+    if error_accumulator:
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+    print(">>> SUCCESS_ACCUMULATOR >>>")
+    print(success_accumulator)
+    print("<<< SUCCESS_ACCUMULATOR <<<")
+    return TASK_SUCCESSFUL_SCORE
+</verifier>
+</task>
+
+### Example 3 — Update task with seed comparison
+<task>
+<prompt>
+Update the phone number for the currently logged-in user to +1-555-9876.
+</prompt>
+<verifier>
+def validate_task(env, final_answer=None) -> int:
+    error_accumulator = []
+    success_accumulator = []
+    env.instance.load()
+    seed = env.db("seed")
+    current = env.db("current")
+
+    LOGGED_IN_USER = "kenneth.johnson@example.com"
+    user = current.table("users").eq("email", LOGGED_IN_USER).first()
+    seed_user = seed.table("users").eq("email", LOGGED_IN_USER).first()
+
+    if not user:
+        error_accumulator.append("[X] User not found")
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+
+    if user["phone"] == "+1-555-9876":
+        success_accumulator.append("[C] Phone updated to +1-555-9876")
+    elif user["phone"] != seed_user["phone"]:
+        error_accumulator.append("[X] Phone changed but not to expected value: " + str(user["phone"]))
+    else:
+        error_accumulator.append("[X] Phone not updated, still: " + str(user["phone"]))
+
+    if error_accumulator:
+        print(">>> ERROR_ACCUMULATOR >>>")
+        print(error_accumulator)
+        print("<<< ERROR_ACCUMULATOR <<<")
+        return TASK_FAILED_SCORE
+    print(">>> SUCCESS_ACCUMULATOR >>>")
+    print(success_accumulator)
+    print("<<< SUCCESS_ACCUMULATOR <<<")
+    return TASK_SUCCESSFUL_SCORE
+</verifier>
+</task>"""
+        )
+
+        # --- E. Output format ---
         parts.append(
             """
 ## Output Format
@@ -512,7 +666,7 @@ Generate exactly ONE task. Output it in this format:
 [Natural language task instruction for the agent. Be specific about what needs to be done.]
 </prompt>
 <verifier>
-[Python function: def verify(env, final_answer=None) -> float]
+[Python function: def validate_task(env, final_answer=None) -> int]
 </verifier>
 </task>"""
         )
@@ -780,13 +934,21 @@ Generate exactly ONE task. Output it in this format:
             result = compute_task_reward(raw_scores, hinted_scores, validity=1.0)
 
             duration = time.time() - start
+
+            # --- Iron-clad eval logging ---
+            # Truncate prompt/verifier for log readability
+            prompt_log = prompt[:300].replace("\n", " ")
+            verifier_log = verifier[:200].replace("\n", " ")
+            hint_log = hint_text[:200].replace("\n", " ")
             logger.info(
-                f"[{task_id}] Eval done in {duration:.0f}s: "
-                f"raw_job={raw_job_id}, hinted_job={hinted_job_id}, "
-                f"raw={raw_scores} (p={result['p_raw']:.2f}), "
-                f"hinted={hinted_scores} (p={result['p_hint']:.2f}), "
-                f"var_raw={result['var_raw']:.4f}, hint_gap={result['hint_gap']:.4f}, "
-                f"total={result['total']:.4f}"
+                f"[{task_id}] EVAL | "
+                f"raw_job={raw_job_id} hinted_job={hinted_job_id} | "
+                f"raw={raw_scores} hinted={hinted_scores} | "
+                f"var={result['var_raw']:.4f} gap={result['hint_gap']:.4f} total={result['total']:.4f} | "
+                f"time={duration:.0f}s | "
+                f"prompt={prompt_log} | "
+                f"verifier={verifier_log} | "
+                f"hint={hint_log}"
             )
 
             return result
