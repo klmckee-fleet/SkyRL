@@ -791,14 +791,69 @@ Generate exactly ONE task. Output it in this format:
         logger.error(f"Job {job_id} timed out after {timeout}s")
         return "timeout"
 
+    def _query_supabase_scores(self, job_id: str) -> Dict[str, float]:
+        """Query Supabase for session verifier scores as fallback.
+
+        When Fleet backend doesn't populate verifier_execution FK (regression
+        since 2026-03-23), the score is still available in session metadata.
+
+        Returns:
+            Dict mapping session_id -> verifier_score.
+        """
+        supabase_url = os.environ.get("SUPABASE_URL", "")
+        supabase_key = os.environ.get("SUPABASE_KEY", "")
+        if not supabase_url or not supabase_key:
+            return {}
+        try:
+            import httpx
+
+            resp = httpx.get(
+                f"{supabase_url}/rest/v1/sessions",
+                params={"job_id": f"eq.{job_id}", "select": "id,metadata"},
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Supabase query failed: {resp.status_code}")
+                return {}
+            scores = {}
+            for row in resp.json():
+                meta = row.get("metadata") or {}
+                sid = row.get("id")
+                v_score = meta.get("verifier_score")
+                if sid and v_score is not None:
+                    scores[sid] = float(v_score)
+            return scores
+        except Exception as e:
+            logger.warning(f"Supabase fallback failed: {e}")
+            return {}
+
     def _extract_job_results(self, fleet, job_id: str) -> List[Tuple[float, Optional[str], Optional[str]]]:
         """Extract (score, verifier_stdout, verifier_error) from completed job sessions.
+
+        Primary path: read from session.verifier_execution (Fleet SDK).
+        Fallback: query Supabase for metadata.verifier_score when VE is null
+        (Fleet backend regression since 2026-03-23 stopped populating VE FK).
 
         Returns:
             List of (score, stdout, error) tuples per session.
         """
         results: List[Tuple[float, Optional[str], Optional[str]]] = []
         sessions_response = fleet.list_job_sessions(job_id)
+
+        # Check if any session has verifier_execution populated
+        all_ve_null = all(s.verifier_execution is None for tg in sessions_response.tasks for s in tg.sessions)
+
+        # Fallback: query Supabase only when needed
+        supabase_scores: Dict[str, float] = {}
+        if all_ve_null:
+            supabase_scores = self._query_supabase_scores(job_id)
+            if supabase_scores:
+                logger.info(f"[{job_id[:8]}] Using Supabase fallback for {len(supabase_scores)} session scores")
+
         for task_group in sessions_response.tasks:
             for session in task_group.sessions:
                 score = 0.0
@@ -830,6 +885,9 @@ Generate exactly ONE task. Output it in this format:
                             if traceback_str:
                                 # Extract just the last line of traceback (the actual error)
                                 error = traceback_str.strip().split("\n")[-1] if traceback_str else error
+                elif session.session_id in supabase_scores:
+                    # Fallback: use Supabase metadata.verifier_score
+                    score = supabase_scores[session.session_id]
                 results.append((score, stdout, error))
         return results
 
