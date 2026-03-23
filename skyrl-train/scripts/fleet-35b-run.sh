@@ -11,6 +11,8 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   --nccl-heartbeat 1800 -- \
   environment.skyrl_gym.fleet_task.ttl_seconds=900 \
   environment.skyrl_gym.fleet_task.partial_reward=true \
+  environment.skyrl_gym.fleet_task.enable_hints=true \
+  environment.skyrl_gym.fleet_task.n_hint_samples=2 \
   trainer.algorithm.advantage_estimator=grpo \
   trainer.policy.model.path="Qwen/Qwen3.5-35B-A3B" \
   trainer.flash_attn=true \
