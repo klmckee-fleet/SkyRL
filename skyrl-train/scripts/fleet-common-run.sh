@@ -192,8 +192,8 @@ export RAY_DISABLE_MEMORY_MONITOR=1
 # NOTE: On GCP VMs without RDMA, gIB NCCL vars are stripped above.
 # On GKE with RDMA, gIB is preserved for inter-node GPUDirect.
 
-# Auto-detect GPUs per node if not set by SkyPilot (e.g. when using sky exec)
-if [ -z "${SKYPILOT_NUM_GPUS_PER_NODE:-}" ]; then
+# Auto-detect GPUs per node if not set by SkyPilot (e.g. sky exec sets it to 0)
+if [ -z "${SKYPILOT_NUM_GPUS_PER_NODE:-}" ] || [ "${SKYPILOT_NUM_GPUS_PER_NODE:-0}" = "0" ]; then
   SKYPILOT_NUM_GPUS_PER_NODE=$(nvidia-smi -L 2>/dev/null | wc -l)
   echo "Auto-detected $SKYPILOT_NUM_GPUS_PER_NODE GPUs per node"
 fi
