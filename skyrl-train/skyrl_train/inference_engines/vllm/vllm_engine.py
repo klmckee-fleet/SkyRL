@@ -394,6 +394,31 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             models = OpenAIServingModels(engine, model_config, base_model_paths)
             legacy_kwargs["model_config"] = model_config
 
+        chat_template = openai_kwargs.pop("chat_template", None)
+
+        # vllm >= 0.18.0 requires openai_serving_render for OpenAIServingChat/Completion
+        render_kwargs = {}
+        if version.parse(vllm.__version__) >= version.parse("0.18.0"):
+            from vllm.entrypoints.openai.models.serving import OpenAIModelRegistry
+            from vllm.entrypoints.serve.render.serving import OpenAIServingRender
+            from vllm.plugins.io_processors import get_io_processor
+            from vllm.renderers import renderer_from_config
+
+            vllm_config = engine_args.create_engine_config()
+            renderer = renderer_from_config(vllm_config)
+            io_processor = get_io_processor(vllm_config, renderer, vllm_config.model_config.io_processor_plugin)
+            model_registry = OpenAIModelRegistry(model_config, base_model_paths)
+            openai_serving_render = OpenAIServingRender(
+                model_config=model_config,
+                renderer=renderer,
+                io_processor=io_processor,
+                model_registry=model_registry,
+                request_logger=None,
+                chat_template=chat_template,
+                chat_template_content_format="auto",
+            )
+            render_kwargs["openai_serving_render"] = openai_serving_render
+
         # TODO(Charlie): revisit kwargs `enable_auto_tools` and `tool_parser` when we need to
         # support OAI-style tool calling; and `request_logger` for better debugging.
         self.openai_serving_chat = OpenAIServingChat(
@@ -401,8 +426,9 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             models=models,
             response_role="assistant",
             request_logger=None,
-            chat_template=openai_kwargs.pop("chat_template", None),  # used to template /chat/completions requests
+            chat_template=chat_template,
             chat_template_content_format="auto",
+            **render_kwargs,
             **legacy_kwargs,
             **openai_kwargs,
         )
@@ -413,6 +439,7 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             engine_client=engine,
             models=models,
             request_logger=None,
+            **render_kwargs,
             **legacy_kwargs,
         )
         return engine
