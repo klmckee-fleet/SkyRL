@@ -215,10 +215,12 @@ wait_for_ray() {
 
 if [ "${SKYPILOT_NODE_RANK:-0}" = "0" ]; then
   # === Head node: start Ray head + launch training ===
-  # Stop SkyPilot's Ray (port 6380) to release GPU resources for training Ray
-  ray stop -f 2>/dev/null || true
-  sleep 2
-  ray start --head --disable-usage-stats --port 6479 --num-gpus "$SKYPILOT_NUM_GPUS_PER_NODE" --object-store-memory=10000000000
+  # NOTE: SkyPilot's Ray runs on port 6380 and we can't stop it (sky exec job runs on it).
+  # We start a separate training Ray on port 6479 with explicit --num-gpus.
+  # Ray GPU resources are logical — two clusters can share the same physical GPUs.
+  if ! ray status --address 127.0.0.1:6479 >/dev/null 2>&1; then
+    ray start --head --disable-usage-stats --port 6479 --num-gpus "$SKYPILOT_NUM_GPUS_PER_NODE" --object-store-memory=10000000000
+  fi
   wait_for_ray 127.0.0.1:6479
 
   TOTAL_GPUS=$((SKYPILOT_NUM_GPUS_PER_NODE * ${SKYPILOT_NUM_NODES:-1}))
@@ -286,10 +288,9 @@ if [ "${SKYPILOT_NODE_RANK:-0}" = "0" ]; then
 else
   # === Worker node: join Ray cluster and wait ===
   echo "=== Worker node (rank ${SKYPILOT_NODE_RANK}), joining Ray cluster at $head_ip:6479 ==="
-  # Stop SkyPilot's Ray (port 6380) to release GPU resources for training Ray
-  ray stop -f 2>/dev/null || true
-  sleep 2
-  ray start --address "$head_ip:6479" --disable-usage-stats --num-gpus "$SKYPILOT_NUM_GPUS_PER_NODE"
+  if ! ray status --address "$head_ip:6479" >/dev/null 2>&1; then
+    ray start --address "$head_ip:6479" --disable-usage-stats --num-gpus "$SKYPILOT_NUM_GPUS_PER_NODE"
+  fi
   wait_for_ray "$head_ip:6479"
   echo "Worker node joined. Sleeping..."
   sleep infinity
