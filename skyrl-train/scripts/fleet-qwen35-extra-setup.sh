@@ -14,6 +14,9 @@ uv pip install -U "transformers==5.3.0"
 # flash-attn 2.8.3 prebuilt wheel for torch 2.10 + CUDA 12 (training forward/backward)
 uv pip install "https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
 
+# GPU packages overridden to skip in uv resolution (require CUDA to build from source)
+uv pip install "causal-conv1d>=1.6.0" "flash-linear-attention"
+
 python -c "import torch; import torchvision; print(f'torch={torch.__version__}, torchvision={torchvision.__version__}')"
 
 # --- CUDA toolkit for FlashInfer JIT (GatedDeltaNet kernels) ---
