@@ -14,7 +14,7 @@ set -euo pipefail
 # --entrypoint: task-gen entrypoint (not main_fleet)
 # --env-class: task_gen environment (not fleet_task)
 # --data-dir-name: parquet files are in data/fleet/task_gen/ (not data/fleet/tool_use/)
-# TP=2: 4 engines × 2 GPUs each (task-gen has smaller batches, needs more GPU memory for evaluator)
+# TP=1: 8 engines × 1 GPU each (Qwen3.5-9B fits in single H200)
 bash skyrl-train/scripts/fleet-common-run.sh \
   --use-python-direct --cuda-env "$HOME/.cuda_env" \
   --set-ulimit --no-pytorch-alloc-conf \
@@ -25,8 +25,8 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   trainer.policy.model.path="Qwen/Qwen3.5-9B" \
   trainer.flash_attn=false \
   trainer.use_sample_packing=false \
-  generator.num_inference_engines=4 \
-  generator.inference_engine_tensor_parallel_size=2 \
+  generator.num_inference_engines=8 \
+  generator.inference_engine_tensor_parallel_size=1 \
   trainer.epochs=${NUM_EPOCHS} \
   trainer.eval_batch_size=12 \
   trainer.eval_before_train=false \
