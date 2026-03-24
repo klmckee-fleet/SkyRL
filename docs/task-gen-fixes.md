@@ -126,6 +126,13 @@ Tracking all fixes applied to the multi-turn task generation RL training pipelin
 
 ---
 
+## Fix #8: Log Fleet Job UUIDs in Eval Summary
+**Commit**: `40f1697d`
+**Symptom**: Can't trace harness eval results back to Fleet dashboard jobs
+**Fix**: `_run_harness_job` returns `(job_id, results)` tuple. Eval log now includes `raw_job=<uuid>, hinted_job=<uuid>` for dashboard reconciliation.
+
+---
+
 ## Known Issues (Not Yet Fixed)
 
 ### Fleet Harness Runtime Bug: `env.env_variables = None`
@@ -134,14 +141,20 @@ The Fleet harness verifier runtime (`/app/fleetgen/runtime.py`) creates an `Envi
 ### Bug #13: Evaluator Agent Asks Follow-up Questions
 The evaluator agent (Sonnet 4.5) sometimes asks follow-up questions instead of completing the task. Lower priority — deprioritized by user.
 
+### Flat Reward Landscape (93% identical rewards)
+With binary scoring (`partial_reward=false`), 93% of evaluated tasks get identical 0.1 reward. Buggy verifiers (crash→0) and too-easy tasks (all pass→hint_gap=0) are indistinguishable. Fix: enable `partial_reward=true` in harness evals to get continuous scores. Tracked in fleet-research changelog as Fix #9 (not yet applied).
+
 ---
 
 ## Training Runs
 
+See [fleet-research/threads/task-rl/runs.md](https://github.com/fleet-ai/fleet-research/blob/main/threads/task-rl/runs.md) for detailed per-iteration analysis.
+
 | Run Name | WandB | Status | Notes |
 |----------|-------|--------|-------|
 | `task_gen_494dce32` | `9i3ueeut` | Killed | Fix #1-#2 only, 100% zero rewards |
-| `task_gen_55f7b9c8` | TBD | Killed | Fix #1-#3, still all zeros (env.env_variables crash) |
-| iter3 (55f7b9c8 cont) | TBD | Killed | Fix #1-#4, still zeros (dict access crash) |
-| iter3 (relaunched) | TBD | Killed | Fix #1-#5, accumulators work but all harness 0.0 |
-| iter4 (task_gen_c1e71be3) | `1hsk4bhw` | Running | Fix #1-#6, base_quality=0.1, first non-zero rewards! |
+| `task_gen_55f7b9c8` | - | Killed | Fix #1-#3, still all zeros (env.env_variables crash) |
+| iter3 (relaunched) | - | Killed | Fix #1-#5, accumulators work but all harness 0.0 |
+| iter4 (`task_gen_c1e71be3`) | `1hsk4bhw` | Killed (4 steps) | Fix #1-#6, first non-zero rewards (0.004-0.043) |
+| iter5 (`task_gen_f33d8281`) | - | Killed (14+ steps) | Fix #1-#8, rewards 0.002→0.092, 73% task production |
+| iter6 | - | Running | n_samples_per_prompt=8 (was 4) |

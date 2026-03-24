@@ -57,7 +57,7 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   generator.batched=false \
   generator.trajectory_timeout_seconds=1800 \
   generator.use_conversation_multi_turn=true \
-  generator.n_samples_per_prompt=4 \
+  generator.n_samples_per_prompt=8 \
   generator.eval_n_samples_per_prompt=3 \
   generator.gpu_memory_utilization=0.15 \
   trainer.logger="$LOGGER" \
