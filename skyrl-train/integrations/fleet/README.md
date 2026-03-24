@@ -148,7 +148,7 @@ See [fleet-research/threads/task-rl/](https://github.com/fleet-ai/fleet-research
 - [runs.md](https://github.com/fleet-ai/fleet-research/blob/main/threads/task-rl/runs.md) — detailed per-iteration analysis
 - [changelog.md](https://github.com/fleet-ai/fleet-research/blob/main/threads/task-rl/changelog.md) — concise fix history
 
-Detailed fix log with evidence: [docs/task-gen-fixes.md](../../docs/task-gen-fixes.md)
+Fix log: [changelog.md](https://github.com/fleet-ai/fleet-research/blob/main/threads/task-rl/changelog.md)
 
 ## Dependencies
 
