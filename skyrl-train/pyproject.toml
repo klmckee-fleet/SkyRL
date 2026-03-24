@@ -38,6 +38,7 @@ dependencies = [
     "tensordict",
     "jaxtyping",
     "skyrl-gym",
+    "flash-attn",
     "causal-conv1d>=1.6.0",
     "flash-linear-attention",
     "polars",
@@ -126,7 +127,7 @@ sandboxes = [
 ]
 vllm = [
     "vllm==0.17.0",
-    # flash-attn installed separately via prebuilt wheel in fleet-qwen35-extra-setup.sh
+    "flash-attn==2.8.3",
     "torch==2.10.0",
     "flashinfer-python",
     "torchvision"
