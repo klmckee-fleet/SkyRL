@@ -78,7 +78,7 @@ uv venv --python 3.12 --seed
 source .venv/bin/activate
 # vLLM 0.17.0 has native Qwen3.5 support (GDN via torch.ops.vllm.gdn_attention_core),
 # FlashAttention 4, and PyTorch 2.10.0
-uv sync --extra vllm --no-build-package flash-attn
+uv sync --extra vllm
 uv pip install wandb boto3 awscli
 uv pip install "litellm>=1.75.5" fleet-python logfire "mcp>=1.0.0"
 
