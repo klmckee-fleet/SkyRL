@@ -2,7 +2,7 @@ import torch
 import pytest
 
 flash_attn = pytest.importorskip("flash_attn", reason="flash-attn not installed (requires CUDA)")
-from flash_attn.bert_padding import pad_input, unpad_input
+from flash_attn.bert_padding import pad_input, unpad_input  # noqa: E402
 
 
 @pytest.fixture
