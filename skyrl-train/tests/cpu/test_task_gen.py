@@ -955,7 +955,7 @@ class TestHarnessEvaluator:
         assert result["p_hint"] == 0.75
         assert result["hint_gap"] == 0.5
         assert abs(result["var_raw"] - 0.1875) < 1e-6
-        expected_total = 1.0 * (0.5 * 0.1875 + 0.5)
+        expected_total = 1.0 * (1.0 * 0.1875 + 0.5)  # alpha=1.0 default
         assert abs(result["total"] - expected_total) < 1e-6
 
     def test_evaluate_task_no_fleet_key(self):
