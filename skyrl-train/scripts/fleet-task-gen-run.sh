@@ -17,7 +17,7 @@ set -euo pipefail
 # TP=1: 8 engines × 1 GPU each (Qwen3.5-9B fits in single H200)
 bash skyrl-train/scripts/fleet-common-run.sh \
   --use-python-direct --cuda-env "$HOME/.cuda_env" \
-  --set-ulimit --no-pytorch-alloc-conf \
+  --set-ulimit \
   --entrypoint integrations.fleet.entrypoints.main_task_gen \
   --env-class task_gen \
   --data-dir-name task_gen -- \
@@ -59,7 +59,7 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   generator.use_conversation_multi_turn=true \
   generator.n_samples_per_prompt=8 \
   generator.eval_n_samples_per_prompt=3 \
-  generator.gpu_memory_utilization=0.80 \
+  generator.gpu_memory_utilization=0.75 \
   trainer.logger="$LOGGER" \
   trainer.project_name="task-gen-grpo" \
   trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
