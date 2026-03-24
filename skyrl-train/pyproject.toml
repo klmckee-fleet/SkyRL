@@ -111,6 +111,7 @@ dev = [
     "pytest-asyncio",
     "pre-commit",
     "litellm",
+    "einops",
 ]
 docs = [
     "sphinx>=7.0.0",
