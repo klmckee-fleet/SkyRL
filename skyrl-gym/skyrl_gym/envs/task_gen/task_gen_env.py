@@ -836,6 +836,18 @@ Generate exactly ONE task. Output it in this format:
                         break
             hint_text = self._build_hint_text(hint_stdout, hint_error, None)
 
+            # Fallback: if hint is generic (no VE stdout due to backend regression),
+            # use the verifier source code as the hint. This tells the hinted agent
+            # exactly what checks to satisfy, creating hint_gap signal.
+            if hint_text == "The previous attempt failed. Try a different approach.":
+                # Truncate verifier to avoid blowing up prompt length
+                verifier_hint = verifier[:2000]
+                hint_text = (
+                    "Here is the verification function that will be used to check your work. "
+                    "Make sure your actions satisfy all the checks:\n\n"
+                    f"```python\n{verifier_hint}\n```"
+                )
+
             # 3. Hinted job: k rollouts with hint
             hinted_prompt = f"{prompt}\n\nHere is feedback from a previous attempt to help you:\n{hint_text}"
             hinted_job_id, hinted_results = await self._run_harness_job(hinted_prompt, verifier, k=self.k_rollouts)
