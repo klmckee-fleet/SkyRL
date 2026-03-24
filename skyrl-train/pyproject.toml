@@ -38,6 +38,7 @@ dependencies = [
     "tensordict",
     "jaxtyping",
     "skyrl-gym",
+    "flash-attn",
     "causal-conv1d>=1.6.0",
     "flash-linear-attention",
     "polars",
@@ -79,12 +80,11 @@ no-build-isolation-package = [
 override-dependencies = [
     "nvidia-resiliency-ext; sys_platform == 'never'",
     "mamba-ssm; sys_platform == 'never'",
-    "flash-attn; sys_platform == 'never'",
     "transformer-engine[pytorch]==2.10.0",
     "megatron-core==0.15.0"
 ]
 [tool.uv.extra-build-dependencies]
-flash-attn = [{requirement = "torch"}]
+flash-attn = [{requirement = "torch", match-runtime = true}]
 transformer-engine = [{requirement = "torch", match-runtime = true}, "build_tools", "ninja"]
 transformer-engine-torch = [{requirement = "torch", match-runtime = true}, "build_tools", "ninja"]
 
@@ -127,7 +127,7 @@ sandboxes = [
 ]
 vllm = [
     "vllm==0.17.0",
-    # flash-attn installed separately via prebuilt wheel in fleet-qwen35-extra-setup.sh
+    "flash-attn==2.8.3",
     "torch==2.10.0",
     "flashinfer-python",
     "torchvision"
