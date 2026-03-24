@@ -3,6 +3,17 @@ import ray
 import torch
 import torch.distributed
 from transformers import AutoConfig
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+# qwen3_5_moe (Qwen3.5-MoE) is not yet registered in transformers auto config;
+# register it as an alias for Qwen3MoeConfig so AutoConfig.from_pretrained works.
+try:
+    from transformers import Qwen3MoeConfig
+
+    if "qwen3_5_moe" not in CONFIG_MAPPING:
+        CONFIG_MAPPING.register("qwen3_5_moe", Qwen3MoeConfig)
+except ImportError:
+    pass
 from torch.distributed.fsdp.api import ShardedStateDictConfig, StateDictType
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
 import io
