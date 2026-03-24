@@ -410,7 +410,7 @@ class TestTaskGenEnvPrompt:
         from omegaconf import DictConfig
         from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
 
-        cfg = {"alpha": 0.5, "k_rollouts": 4, "models": ["weak"], "max_turns": 1}
+        cfg = {"k_rollouts": 4, "max_turns": 1}
         if env_config_overrides:
             cfg.update(env_config_overrides)
         env_config = DictConfig(cfg)
@@ -436,12 +436,12 @@ class TestTaskGenEnvPrompt:
         assert "Search for products by keyword" in prompt
         assert "Add a product to the shopping cart" in prompt
 
-    def test_system_prompt_contains_tool_parameters(self):
+    def test_system_prompt_contains_tool_names_compact(self):
+        """Compact format: tool name + description, no parameter schemas."""
         env = self._make_env()
         prompt = env._build_system_prompt()
-        assert "query" in prompt
-        assert "product_id" in prompt
-        assert "(required)" in prompt
+        assert "**search_products**:" in prompt
+        assert "**add_to_cart**:" in prompt
 
     def test_system_prompt_contains_env_variables(self):
         env = self._make_env()
@@ -459,7 +459,7 @@ class TestTaskGenEnvPrompt:
         env = self._make_env()
         prompt = env._build_system_prompt()
         assert "Verifier Guidelines" in prompt
-        assert "def verify(env" in prompt
+        assert "def validate_task(env" in prompt
         assert "Task Design Guidelines" in prompt
 
     def test_system_prompt_contains_output_format(self):
@@ -599,7 +599,7 @@ class TestTaskGenEnvMultiTurn:
         from omegaconf import DictConfig
         from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
 
-        env_config = DictConfig({"alpha": 0.5, "k_rollouts": 4, "models": ["weak"], "max_turns": max_turns})
+        env_config = DictConfig({"k_rollouts": 4, "max_turns": max_turns})
         extras = {
             "env_key": "testenv",
             "env_version": "v1",
@@ -610,7 +610,12 @@ class TestTaskGenEnvMultiTurn:
             "env_variable_keys": json.dumps(["LOGGED_IN_USER"]),
         }
         extras.update(extra_overrides)
-        return TaskGenEnv(env_config=env_config, extras=extras)
+        env = TaskGenEnv(env_config=env_config, extras=extras)
+        # init_async sets these; tests call step_async directly
+        env.turns = 0
+        env.meta_tool_calls = 0
+        env.mcp_tool_calls = 0
+        return env
 
     def test_max_turns_from_env_config(self):
         env = self._make_env(max_turns=7)
@@ -628,14 +633,14 @@ class TestTaskGenEnvMultiTurn:
     def test_system_prompt_includes_meta_tools_when_multi_turn(self):
         env = self._make_env(max_turns=5)
         prompt = env._build_system_prompt()
-        assert "Database Exploration Tools" in prompt
+        assert "Exploration Tools" in prompt
         assert "describe_db" in prompt
         assert "query_db" in prompt
 
     def test_system_prompt_excludes_meta_tools_when_single_turn(self):
         env = self._make_env(max_turns=1)
         prompt = env._build_system_prompt()
-        assert "Database Exploration Tools" not in prompt
+        assert "Exploration Tools" not in prompt
 
     def test_step_async_tool_call_returns_observation(self):
         """Tool call should return observation with done=False."""
@@ -699,16 +704,16 @@ class TestTaskGenEnvMultiTurn:
         task_action = """<task>
 <prompt>Search for a product called "Widget" and add it to the cart.</prompt>
 <verifier>
-def verify(env, final_answer=None):
+def validate_task(env, final_answer=None):
     env.instance.load()
     current = env.db("current")
     cart_items = current.table("cart_items").all()
     if not cart_items:
-        return 0.0
+        return 0
     for item in cart_items:
         if "widget" in str(item.get("name", "")).lower():
-            return 1.0
-    return 0.0
+            return 1
+    return 0
 </verifier>
 </task>"""
 
@@ -884,17 +889,21 @@ class TestHarnessEvaluator:
     # -- _extract_job_results tests --
 
     def test_extract_job_results_scores_and_stdout(self):
-        """_extract_job_results extracts (score, stdout) from sessions."""
+        """_extract_job_results extracts (score, stdout, error) from sessions."""
         env = self._make_env()
         mock_fleet = MagicMock()
 
         session1 = MagicMock()
-        session1.verifier_execution = MagicMock(score=1.0, stdout="passed")
+        session1.session_id = "s1"
+        session1.verifier_execution = MagicMock(score=1.0, stdout="passed", result=None)
         session2 = MagicMock()
-        session2.verifier_execution = MagicMock(score=0.0, stdout="failed check X")
+        session2.session_id = "s2"
+        session2.verifier_execution = MagicMock(score=0.0, stdout="failed check X", result=None)
         session3 = MagicMock()
-        session3.verifier_execution = MagicMock(score=None, success=True, stdout=None)
+        session3.session_id = "s3"
+        session3.verifier_execution = MagicMock(score=None, success=True, stdout=None, result=None)
         session4 = MagicMock()
+        session4.session_id = "s4"
         session4.verifier_execution = None
 
         task_group = MagicMock()
@@ -903,10 +912,10 @@ class TestHarnessEvaluator:
 
         results = env._extract_job_results(mock_fleet, "job-123")
         assert len(results) == 4
-        assert results[0] == (1.0, "passed")
-        assert results[1] == (0.0, "failed check X")
-        assert results[2] == (1.0, None)  # success=True fallback
-        assert results[3] == (0.0, None)  # no verifier_execution
+        assert results[0] == (1.0, "passed", None)
+        assert results[1] == (0.0, "failed check X", None)
+        assert results[2] == (1.0, None, None)  # success=True fallback
+        assert results[3] == (0.0, None, None)  # no verifier_execution
 
     def test_extract_job_results_empty_sessions(self):
         """_extract_job_results returns empty list when no sessions."""
@@ -930,10 +939,13 @@ class TestHarnessEvaluator:
             call_count += 1
             if call_count == 1:
                 # Raw: 1 of 4 pass
-                return [(0.0, "error log"), (0.0, None), (1.0, None), (0.0, None)]
+                return (
+                    "raw-job-id",
+                    [(0.0, "error log", None), (0.0, None, None), (1.0, None, None), (0.0, None, None)],
+                )
             else:
                 # Hinted: 3 of 4 pass
-                return [(1.0, None), (1.0, None), (1.0, None), (0.0, None)]
+                return ("hinted-job-id", [(1.0, None, None), (1.0, None, None), (1.0, None, None), (0.0, None, None)])
 
         env._run_harness_job = mock_harness_job
 
@@ -965,9 +977,12 @@ class TestHarnessEvaluator:
         async def mock_harness_job(prompt, verifier, k):
             prompts_received.append(prompt)
             if len(prompts_received) == 1:
-                return [(0.0, ">>> ERROR_ACCUMULATOR >>>\n['check failed']\n<<< ERROR_ACCUMULATOR <<<")]
+                return (
+                    "raw-job",
+                    [(0.0, ">>> ERROR_ACCUMULATOR >>>\n['check failed']\n<<< ERROR_ACCUMULATOR <<<", None)],
+                )
             else:
-                return [(1.0, None)]
+                return ("hinted-job", [(1.0, None, None)])
 
         env._run_harness_job = mock_harness_job
 
@@ -979,8 +994,8 @@ class TestHarnessEvaluator:
 
     # -- _handle_task_generation tests --
 
-    def test_handle_task_generation_no_base_reward(self):
-        """Reward should NOT include base_reward or exploration_bonus."""
+    def test_handle_task_generation_reward_formula(self):
+        """Reward = base_quality + judge_gate * eval_signal. No exploration_bonus."""
         env = self._make_env()
         env.turns = 0
         env.meta_tool_calls = 3
@@ -1004,11 +1019,11 @@ class TestHarnessEvaluator:
             "<task>\n"
             "<prompt>Search for a widget</prompt>\n"
             "<verifier>\n"
-            "def verify(env, final_answer=None):\n"
+            "def validate_task(env, final_answer=None):\n"
             "    env.instance.load()\n"
             '    current = env.db("current")\n'
             '    rows = current.table("products").eq("name", "widget").all()\n'
-            "    return 1.0 if rows else 0.0\n"
+            "    return 1 if rows else 0\n"
             "</verifier>\n"
             "</task>"
         )
@@ -1017,8 +1032,8 @@ class TestHarnessEvaluator:
         assert result["done"] is True
 
         breakdown = result["metadata"]["reward_breakdown"]
-        assert "base_reward" not in breakdown
         assert "exploration_bonus" not in breakdown
+        assert "base_quality" in breakdown
 
         from integrations.fleet.task_gen_reward import compute_task_reward
 
@@ -1026,9 +1041,10 @@ class TestHarnessEvaluator:
             raw_scores=[0.0, 0.0, 1.0, 0.0],
             hinted_scores=[1.0, 1.0, 1.0, 0.0],
         )
-        assert abs(result["reward"] - expected["total"]) < 1e-6
+        # reward = base_quality(0.1) + judge_gate(1.0) * eval_total
+        assert abs(result["reward"] - (0.1 + expected["total"])) < 1e-6
 
-    def test_handle_task_generation_judge_fail_no_exploration_bonus(self):
+    def test_handle_task_generation_judge_fail_zero_reward(self):
         """Judge failure should return reward=0, no exploration_bonus."""
         env = self._make_env()
         env.turns = 0
@@ -1043,11 +1059,11 @@ class TestHarnessEvaluator:
             "<task>\n"
             "<prompt>Search for a widget</prompt>\n"
             "<verifier>\n"
-            "def verify(env, final_answer=None):\n"
+            "def validate_task(env, final_answer=None):\n"
             "    env.instance.load()\n"
             '    current = env.db("current")\n'
             '    rows = current.table("products").eq("name", "widget").all()\n'
-            "    return 1.0 if rows else 0.0\n"
+            "    return 1 if rows else 0\n"
             "</verifier>\n"
             "</task>"
         )
@@ -1068,8 +1084,8 @@ class TestHarnessEvaluator:
         assert result["done"] is True
         assert result["reward"] == 0.0
 
-    def test_nudge_max_turns_no_exploration_bonus(self):
-        """Max turns nudge should return reward=0, no exploration_bonus."""
+    def test_nudge_max_turns_zero_reward(self):
+        """Max turns nudge should return reward=0."""
         from omegaconf import DictConfig
         from skyrl_gym.envs.task_gen.task_gen_env import TaskGenEnv
 
@@ -1083,4 +1099,3 @@ class TestHarnessEvaluator:
         result = asyncio.run(env.step_async("just thinking..."))
         assert result["done"] is True
         assert result["reward"] == 0.0
-        assert "exploration_bonus" not in result["metadata"]
