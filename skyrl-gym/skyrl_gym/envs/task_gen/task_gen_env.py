@@ -295,7 +295,6 @@ class TaskGenEnv(BaseTextEnv):
                 "are valid before generating tasks. Use `query_db` to check."
             )
 
-        env_var_api = ""
         # NOTE: env.env_variables is NOT available at verifier runtime (Fleet harness bug).
         # Model is instructed to embed env var values as constants instead.
 
