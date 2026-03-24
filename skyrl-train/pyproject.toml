@@ -83,7 +83,7 @@ override-dependencies = [
     "megatron-core==0.15.0"
 ]
 [tool.uv.extra-build-dependencies]
-flash-attn = [{requirement = "torch", match-runtime = true}]
+flash-attn = [{requirement = "torch"}]
 transformer-engine = [{requirement = "torch", match-runtime = true}, "build_tools", "ninja"]
 transformer-engine-torch = [{requirement = "torch", match-runtime = true}, "build_tools", "ninja"]
 
