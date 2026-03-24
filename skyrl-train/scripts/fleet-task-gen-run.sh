@@ -59,7 +59,7 @@ bash skyrl-train/scripts/fleet-common-run.sh \
   generator.use_conversation_multi_turn=true \
   generator.n_samples_per_prompt=8 \
   generator.eval_n_samples_per_prompt=3 \
-  generator.gpu_memory_utilization=0.15 \
+  generator.gpu_memory_utilization=0.25 \
   trainer.logger="$LOGGER" \
   trainer.project_name="task-gen-grpo" \
   trainer.run_name="task_gen_${RUN_ID:-$(head -c 4 /dev/urandom | xxd -p)}" \
