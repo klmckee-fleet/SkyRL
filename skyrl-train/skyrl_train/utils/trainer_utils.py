@@ -295,6 +295,7 @@ def dump_per_dataset_eval_results(
         sanitized_data_source = sanitize_data_source(data_source)
         filename = dump_dir_path / f"{sanitized_data_source}.jsonl"
 
+        per_traj_env_metrics = concat_generator_outputs.get("env_metrics") or []
         with open(filename, "w") as f:
             for i in indices:
                 entry = {
@@ -304,6 +305,7 @@ def dump_per_dataset_eval_results(
                     "stop_reason": concat_generator_outputs.get("stop_reasons", [None] * len(input_prompts))[i],
                     "env_class": concat_all_envs[i],
                     "env_extras": concat_env_extras[i],
+                    "env_metrics": per_traj_env_metrics[i] if i < len(per_traj_env_metrics) else None,
                     "data_source": data_source,
                 }
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
