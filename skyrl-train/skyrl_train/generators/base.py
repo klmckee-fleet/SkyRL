@@ -41,6 +41,8 @@ class GeneratorOutput(TypedDict):
     trajectory_ids: Optional[List[TrajectoryID]]
     # Applicable only for step-wise training
     is_last_step: Optional[List[bool]]
+    # Per-trajectory environment metrics (turns, tool_calls, tool_errors, env_key, etc.)
+    env_metrics: Optional[List[Dict[str, Any]]]
 
 
 class MetricsOutput(TypedDict):
