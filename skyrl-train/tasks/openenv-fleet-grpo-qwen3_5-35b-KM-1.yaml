@@ -33,7 +33,7 @@ resources:
 num_nodes: 2
 
 workdir:
-  url: https://github.com/fleet-ai/SkyRL.git
+  url: https://github.com/klmckee-fleet/SkyRL.git
   ref: kevin/1
 
 envs:
