@@ -922,6 +922,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             for h in range(n_hint):
                 hinted_extras = dict(env_extras[best_orig_idx])
                 hinted_extras["hint"] = hint_text
+                hinted_extras["prior_trajectory"] = metrics.get("prior_trajectory", [])
                 hinted_extras["is_hinted"] = True
                 tid = TrajectoryID(instance_id=iid, repetition_id=base_rep_id + h)
                 hint_tasks.append(
@@ -1194,6 +1195,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             "trajectory_ids": out_trajectory_ids,
             "is_last_step": is_last_step,
             "is_hinted": is_hinted,
+            "env_metrics": env_metrics,
         }
 
         return generator_output

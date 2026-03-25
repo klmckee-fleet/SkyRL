@@ -288,10 +288,18 @@ class FleetTaskEnv(BaseTextEnv):
         # Build initial prompt with task instruction
         task_prompt = self.task_config.get("prompt", "")
 
-        # Inject hint from previous failed attempt if provided
+        # Inject prior trajectory + hint from previous failed attempt if provided
+        prior_trajectory = self.extras.get("prior_trajectory")
         hint = self.extras.get("hint")
-        if hint:
-            task_prompt = f"{task_prompt}\n\nHere is feedback from a previous attempt to help you:\n{hint}"
+        if prior_trajectory or hint:
+            sections = []
+            if prior_trajectory:
+                formatted = FleetTaskEnv.format_prior_trajectory(prior_trajectory)
+                if formatted:
+                    sections.append(f"Here is what you tried in your previous attempt:\n{formatted}")
+            if hint:
+                sections.append(f"Here is feedback from that attempt:\n{hint}")
+            task_prompt = task_prompt + "\n\n" + "\n\n".join(sections)
 
         # Build system prompt with tool definitions
         tools_json = json.dumps(self.tools, indent=2)
@@ -597,7 +605,50 @@ If the task is complete, provide your answer then say <done>. Otherwise, make a 
             metrics["verifier_error"] = self._verifier_error
         if self._tool_error_messages:
             metrics["tool_error_messages"] = self._tool_error_messages
+        # Prior trajectory: the interaction turns from this episode (skip system + initial user message).
+        # Used by hint augmentation so the next hinted rollout sees what was tried before.
+        if len(self.chat_history) > 2:
+            metrics["prior_trajectory"] = self.chat_history[2:]
         return metrics
+
+    @staticmethod
+    def format_prior_trajectory(
+        turns: List[Dict[str, Any]],
+        max_turns: int = 10,
+        max_chars_per_message: int = 500,
+    ) -> str:
+        """Format interaction turns from a prior failed attempt as readable text.
+
+        Args:
+            turns: List of alternating assistant/user messages from chat_history[2:]
+                   (i.e. skip system prompt and initial user task message).
+            max_turns: Max number of assistant turns to include.
+            max_chars_per_message: Max characters per message before truncation.
+        """
+        lines = []
+        turn_num = 0
+        total_assistant_turns = sum(1 for m in turns if m.get("role") == "assistant")
+        for msg in turns:
+            if turn_num >= max_turns:
+                remaining = total_assistant_turns - turn_num
+                if remaining > 0:
+                    lines.append(f"  [... {remaining} more turns not shown]")
+                break
+            role = msg.get("role", "")
+            content = msg.get("content") or ""
+            if role == "assistant":
+                turn_num += 1
+                # Strip thinking blocks — they are very long and not useful as prior context
+                content_clean = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                if len(content_clean) > max_chars_per_message:
+                    content_clean = content_clean[:max_chars_per_message] + "..."
+                lines.append(f"[Turn {turn_num}] Action: {content_clean}")
+            elif role == "user":
+                result = content
+                if len(result) > max_chars_per_message:
+                    result = result[:max_chars_per_message] + "..."
+                lines.append(f"  Observation: {result}")
+        return "\n".join(lines)
 
     @staticmethod
     def build_hint_text(
