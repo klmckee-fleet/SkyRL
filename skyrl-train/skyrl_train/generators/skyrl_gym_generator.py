@@ -1194,6 +1194,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             "trajectory_ids": out_trajectory_ids,
             "is_last_step": is_last_step,
             "is_hinted": is_hinted,
+            "env_metrics": env_metrics,
         }
 
         return generator_output
