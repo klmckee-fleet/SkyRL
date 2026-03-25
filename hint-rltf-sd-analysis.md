@@ -111,7 +111,11 @@ RLTF-SD was developed in a reasoning context where "tools" are general problem-s
 
 A gradient that improves SQL filtering on one database does almost nothing to improve SQL filtering on a different database. The successful hinted behavior was correct because it happened to match what *this specific tool* does — the schema, column names, value encodings, table structure. Training on it teaches facts about one environment, not a transferable skill. The only generalizable bridge between environments is **reasoning about tools** — how to explore an unknown schema, how to interpret an unexpected result, how to recover from a tool error. Hints should focus on where that reasoning went wrong, not on reproducing the specific corrected action.
 
-**2. Hint-specific reasoning creates incoherent amortized behavior.**
+**2. Hints fire hardest on the tasks where off-policy mismatch is worst.**
+
+Hints only trigger when all 8 raw samples score 0 — meaning the model's current policy is maximally far from the solution. These are exactly the tasks where `π(y_hint | x_bare)` is smallest, the importance ratio is largest, and RLTF-SD is least stable. The mechanism applies its most aggressive off-policy correction to the examples where it's least likely to work.
+
+**3. Hint-specific reasoning creates incoherent amortized behavior.**
 
 The hinted rollout directly references the hint. The agent may generate reasoning like:
 
