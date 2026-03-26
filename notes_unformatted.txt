@@ -1,0 +1,43 @@
+
+
+Hint problems:
+    - No-Ops: Most (70%) hints are uninformative "no answer". Can the context overflow be prevented in the first place? What are the actual context length requirements of each task?
+        - Context length seems like the wrong problem to be trying to solve here but requires a solution.
+        - Not immediately obvious that this is resulting from bad behaviors.
+    - Hint incompleteness: For all other kinds of hints, they still may not be informative for task specific reasons. May strictly require knowing what was done previously to get that hint.
+        e.g.  Checks failed (1): [X] F1=0: no correct rows (expected 3, predicted 3)  
+            - Which table? actual values? what kind of mistake led to incorrect rows?
+            - Many errors require a debug or search session for a useful solution to be stated. i.e. the problem lies in the intricacies of the tool calls.
+    - Hint context specificity: Informativeness of the hint may be too cryptic for the agent, like "You created a booking but with the wrong guest count" only tells the agent not to get it wrong, but it has no idea when or why it made that mistake.
+        i.e. most hints are probably not very different from "Don't screw it up."
+        Even if it is specific, it may require too much of an extra inferential process to figure out where that advice applies, if it even applies at all given random variation in the rollouts.
+    - Better hint translation: Are hints simplistic? Can the hint-generating model instead provide more nuanced prompting and instruction?
+        - Error correction versus "lessons learned" if the point is to obtain generalizable training signals: 
+                Raw verifier hint:                                                                                                                                                                                                                                                                                                               
+                    Checks failed (1): [X] F1=0: no correct rows (expected 3, predicted 3)                                                                                                                                                                                                                                                           
+                                                                                                                                                                                                                                                                                                                                                    
+                    With tool call history visible:                                                                                                                                                                                                                                                                                                  
+                    [Turn 3] Action: SELECT merchant_name, amount, date FROM transactions                                                                                                                                                                                                                                                            
+                                    WHERE category = 'groceries' ORDER BY date DESC LIMIT 3
+                        Observation: [{"merchant_name": "Whole Foods", "amount": 45.20, ...}]                                                                                                                                                                                                                                                          
+                    
+                    Lessons-learned hint:                                                                                                                                                                                                                                                                                                            
+                    Your query structure was correct but you filtered on the wrong column value.
+                    Before writing your final query, explore the distinct values in the columns                                                                                                                                                                                                                                                      
+                    you plan to filter on — the actual category strings in the database may not                                                                                                                                                                                                                                                      
+                    match what the task description says. Use a SELECT DISTINCT query first to                                                                                                                                                                                                                                                       
+                    verify the exact values before filtering.  
+
+
+RLTF-SD applicability to tool use:
+    Most problems are going to come from the fact that tools correspond to specific computations that the model cannot or should not try to approximate.
+    RLTF-SD originally concerns the quality of reasoning, so the "tools" are more like general conceptual turns and problem solving strategies.
+
+    - Does the new agent response directly reference the hint in the prompt, creating overly specific or illogical discontinuities in the model?
+            e.g. "Previously, row 3 had incorrect values as a result of x and y args in tool call A." -> "I previously used args x and y in tool call A so ... " is not going to be generally true as an amortized context.
+    - Tool calls produce or operate on privileged information that may not be possible or reasonable to consolidate into the model in general ways. I.e gradients that improve tool use on google maps does basically nothing to improve usage of SQL.
+        Actually, reasoning about tools is the only bridge, and so hints should focus on where the reasoning about tools went wrong. 
+
+    
+        
+

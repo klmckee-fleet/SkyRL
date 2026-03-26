@@ -13,9 +13,8 @@
 # Multi-node (2-node default, 16 GPUs total): 8x B200/H200 per node
 # NOTE: Requires vLLM >= 0.17.0 for native Qwen3.5/GDN support + FlashAttention 4
 
-
-# This YAML runs a branch that implements "tool call transcript" in the hint feedback such that the agent has richer trajectory information
-# to inform its next attempt.
+# This YAML just implements additional reporting to wandb to diagnose context overflow problem.
+# Not run or elaborated.
 
 name: fleet-task-grpo-qwen3-5-35b-km0
 
@@ -43,8 +42,8 @@ resources:
 num_nodes: 2
 
 workdir:
-  url: https://github.com/fleet-ai/SkyRL.git
-  ref: kevin/0
+  url: https://github.com/klmckee-fleet/SkyRL.git
+  ref: kevin/1
 
 envs:
   WANDB_API_KEY: ""
